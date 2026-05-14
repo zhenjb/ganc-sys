@@ -13,12 +13,6 @@ func NewMockRepository() *MockRepository {
 }
 
 func (r *MockRepository) GetState(ctx context.Context) types.AppState {
-	deposit := r.GetDepositRecord(ctx)
-	withdrawReq := r.GetWithdrawRequest(ctx)
-	settlement := r.GetSettlementUpdate(ctx)
-	proof := r.GetProofBundle(ctx)
-	withdrawRecord := r.GetWithdrawRecord(ctx, false)
-
 	return types.AppState{
 		Mode:             "mock",
 		CurrentStateRoot: "0xrootA",
@@ -28,14 +22,16 @@ func (r *MockRepository) GetState(ctx context.Context) types.AppState {
 		ModuleAccountBalance: map[string]string{
 			"uusdc": "0",
 		},
-		LatestDeposit:         &deposit,
-		LatestWithdrawRequest: &withdrawReq,
-		LatestSettlement:      &settlement,
-		LatestProof:           &proof,
-		LatestWithdrawRecord:  &withdrawRecord,
-		ProofStatus:           "idle",
-		DepositStatus:         "none",
-		WithdrawStatus:        "none",
+
+		LatestDeposit:         nil,
+		LatestWithdrawRequest: nil,
+		LatestSettlement:      nil,
+		LatestProof:           nil,
+		LatestWithdrawRecord:  nil,
+
+		ProofStatus:    "idle",
+		DepositStatus:  "none",
+		WithdrawStatus: "none",
 	}
 }
 

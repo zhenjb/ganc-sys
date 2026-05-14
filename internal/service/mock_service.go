@@ -3,17 +3,23 @@ package service
 import (
 	"context"
 
+	"github.com/zhenjb/ganc-sys/internal/chain"
 	"github.com/zhenjb/ganc-sys/internal/repository"
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
 
 type MockService struct {
 	mockRepository *repository.MockRepository
+	chainClient    chain.Client
 }
 
-func NewMockService(mockRepository *repository.MockRepository) *MockService {
+func NewMockService(
+	mockRepository *repository.MockRepository,
+	chainClient chain.Client,
+) *MockService {
 	return &MockService{
 		mockRepository: mockRepository,
+		chainClient:    chainClient,
 	}
 }
 

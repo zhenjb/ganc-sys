@@ -6,11 +6,11 @@ type AppState struct {
 	UserBalances         map[string]string `json:"userBalances"`
 	ModuleAccountBalance map[string]string `json:"moduleAccountBalance"`
 
-	LatestDeposit         *DepositRecord    `json:"latestDeposit,omitempty"`
-	LatestWithdrawRequest *WithdrawRequest  `json:"latestWithdrawRequest,omitempty"`
-	LatestSettlement      *SettlementUpdate `json:"latestSettlement,omitempty"`
-	LatestProof           *ProofBundle      `json:"latestProof,omitempty"`
-	LatestWithdrawRecord  *WithdrawRecord   `json:"latestWithdrawRecord,omitempty"`
+	LatestDeposit         *DepositRecord    `json:"latestDeposit"`
+	LatestWithdrawRequest *WithdrawRequest  `json:"latestWithdrawRequest"`
+	LatestSettlement      *SettlementUpdate `json:"latestSettlement"`
+	LatestProof           *ProofBundle      `json:"latestProof"`
+	LatestWithdrawRecord  *WithdrawRecord   `json:"latestWithdrawRecord"`
 
 	ProofStatus    string `json:"proofStatus"`
 	DepositStatus  string `json:"depositStatus"`

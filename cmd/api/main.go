@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/zhenjb/ganc-sys/internal/api"
+	"github.com/zhenjb/ganc-sys/internal/chain"
 	"github.com/zhenjb/ganc-sys/internal/handler"
 	"github.com/zhenjb/ganc-sys/internal/repository"
 	"github.com/zhenjb/ganc-sys/internal/service"
@@ -14,12 +15,14 @@ import (
 func main() {
 	port := getenv("PORT", "8080")
 
+	chainClient := chain.NewMockClient()
+
 	healthRepository := repository.NewHealthRepository()
 	healthService := service.NewHealthService(healthRepository)
 	healthHandler := handler.NewHealthHandler(healthService)
 
 	mockRepository := repository.NewMockRepository()
-	mockService := service.NewMockService(mockRepository)
+	mockService := service.NewMockService(mockRepository, chainClient)
 	mockHandler := handler.NewMockHandler(mockService)
 
 	router := api.NewRouter(api.RouterDeps{
