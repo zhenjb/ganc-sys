@@ -1,0 +1,8 @@
+{
+  "depositId": "dep-1",
+  "owner": "cosmos1alice",
+  "denom": "uusdc",
+  "amount": "100",
+  "processed": false,
+  "createdHeight": 12345
+}
