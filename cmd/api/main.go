@@ -14,12 +14,17 @@ import (
 func main() {
 	port := getenv("PORT", "8080")
 
-	healthRepo := repository.NewHealthRepository()
-	healthService := service.NewHealthService(healthRepo)
+	healthRepository := repository.NewHealthRepository()
+	healthService := service.NewHealthService(healthRepository)
 	healthHandler := handler.NewHealthHandler(healthService)
+
+	mockRepository := repository.NewMockRepository()
+	mockService := service.NewMockService(mockRepository)
+	mockHandler := handler.NewMockHandler(mockService)
 
 	router := api.NewRouter(api.RouterDeps{
 		HealthHandler: healthHandler,
+		MockHandler:   mockHandler,
 	})
 
 	addr := ":" + port
