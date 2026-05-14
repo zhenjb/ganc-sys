@@ -7,4 +7,5 @@ type DepositRecord struct {
 	Amount        string `json:"amount"`
 	Processed     bool   `json:"processed"`
 	CreatedHeight int64  `json:"createdHeight"`
+	TxHash        string `json:"txHash"`
 }
