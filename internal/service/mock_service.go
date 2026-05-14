@@ -27,19 +27,26 @@ func (s *MockService) GetState(ctx context.Context) types.AppState {
 	return s.mockRepository.GetState(ctx)
 }
 
-func (s *MockService) MockDeposit(ctx context.Context, req types.DepositRequestBody) types.DepositResponse {
-	deposit := s.mockRepository.GetDepositRecord(ctx)
+func (s *MockService) MockDeposit(ctx context.Context, req types.DepositRequestBody) (types.DepositResponse, error) {
+	result, err := s.chainClient.Deposit(ctx, chain.DepositRequest{
+		Owner:  req.Owner,
+		Denom:  req.Denom,
+		Amount: req.Amount,
+	})
+	if err != nil {
+		return types.DepositResponse{}, err
+	}
 
 	return types.DepositResponse{
-		TxHash:        deposit.TxHash,
-		DepositRecord: deposit,
+		TxHash:        result.TxHash,
+		DepositRecord: result.DepositRecord,
 		State: types.PartialState{
 			CurrentStateRoot: "0xrootA",
 			DepositStatus:    "locked",
 			ProofStatus:      "idle",
 			WithdrawStatus:   "none",
 		},
-	}
+	}, nil
 }
 
 func (s *MockService) MockWithdrawRequest(ctx context.Context, req types.WithdrawRequestBody) types.WithdrawRequestResponse {

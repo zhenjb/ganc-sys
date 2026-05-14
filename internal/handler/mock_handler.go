@@ -36,7 +36,12 @@ func (h *MockHandler) MockDeposit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result := h.mockService.MockDeposit(r.Context(), req)
+	result, err := h.mockService.MockDeposit(r.Context(), req)
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	response.JSON(w, http.StatusOK, result)
 }
 
