@@ -1,5 +1,5 @@
 // gen_state_vectors materializes the canonical Alice 100/40 vectors under
-// testvectors/alice_100_40/ for P3 STATE-02/STATE-03.
+// testvectors/alice_100_40/ for P3 STATE-02/STATE-03/STATE-04.
 //
 // It is run from the repo root:
 //
@@ -69,8 +69,30 @@ func main() {
 	}
 	write("state_after_deposit.json", after)
 
+	// STATE-04 — build the canonical Alice withdraw request (40 uusdc).
+	// Builder reads (but does not mutate) the post-deposit local state, so the
+	// snapshot above (rootB, balance=100, nonce=0) is the input precondition.
+	wb := state.NewWithdrawRequestBuilder(ls)
+	wdReq, err := wb.Build(state.WithdrawIntent{
+		Owner:       aliceAddr,
+		Denom:       denom,
+		Amount:      "40",
+		Destination: aliceAddr,
+	})
+	if err != nil {
+		die("build withdraw request: %v", err)
+	}
+	write("withdraw_request_wd_1.json", wdReq)
+
+	// Re-snapshot to assert STATE-04 left the state unchanged.
+	postBuildRoot := ls.Root()
+	if postBuildRoot != newRoot {
+		die("STATE-04 mutated root: rootB=%s, after-build=%s", newRoot, postBuildRoot)
+	}
+
 	fmt.Println("rootA:", initial.Root)
 	fmt.Println("rootB:", newRoot)
+	fmt.Println("withdrawRequest:", wdReq.WithdrawID, "nonce:", wdReq.Nonce)
 	fmt.Println("wrote vectors into", outDir)
 }
 
