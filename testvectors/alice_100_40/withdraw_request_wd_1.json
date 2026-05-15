@@ -1,0 +1,9 @@
+{
+  "withdrawId": "wd-1",
+  "owner": "cosmos1alice",
+  "denom": "uusdc",
+  "amount": "40",
+  "destination": "cosmos1alice",
+  "nonce": "1",
+  "signature": ""
+}

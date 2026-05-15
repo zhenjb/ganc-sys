@@ -1,0 +1,12 @@
+{
+  "root": "0x9b325b4150d417adfd816930b6f291aaf9493995fe0f960864c616ff178f8620",
+  "accounts": [
+    {
+      "owner": "cosmos1alice",
+      "denom": "uusdc",
+      "balance": "100",
+      "nonce": "0"
+    }
+  ],
+  "note": "STATE-03 — after applying dep-1, Alice balance=100. rootB."
+}
