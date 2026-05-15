@@ -4,5 +4,6 @@
   "denom": "uusdc",
   "amount": "100",
   "processed": false,
-  "createdHeight": 12345
+  "createdHeight": 12345,
+  "txHash": "0x250e45522560609a604b00b437734ecd"
 }

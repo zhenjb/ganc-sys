@@ -10,10 +10,13 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/zhenjb/ganc-sys/internal/state"
 	"github.com/zhenjb/ganc-sys/pkg/types"
@@ -51,6 +54,7 @@ func main() {
 		Amount:        "100",
 		Processed:     false,
 		CreatedHeight: 12345,
+		TxHash:        canonicalTxHash("deposit", aliceAddr, denom, "100", "dep-1"),
 	}
 	write("deposit_dep_1.json", dep1)
 
@@ -79,6 +83,18 @@ func write(name string, v any) {
 	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
 		die("write %s: %v", path, err)
 	}
+}
+
+// canonicalTxHash mirrors the recipe used by P4's chain.MockClient
+// (`internal/chain/mock_client.go::mockTxHash`) so the static test vector
+// matches what the mock would emit at runtime for the same input.
+func canonicalTxHash(parts ...string) string {
+	h := sha256.New()
+	for _, part := range parts {
+		h.Write([]byte(part))
+		h.Write([]byte("|"))
+	}
+	return "0x" + strings.ToLower(hex.EncodeToString(h.Sum(nil)))[:32]
 }
 
 func die(format string, args ...any) {
