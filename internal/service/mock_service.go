@@ -45,6 +45,7 @@ func (s *MockService) MockDeposit(ctx context.Context, req types.DepositRequestB
 			DepositStatus:    "locked",
 			ProofStatus:      "idle",
 			WithdrawStatus:   "none",
+			BatchStatus:      "none",
 		},
 	}, nil
 }
@@ -63,8 +64,10 @@ func (s *MockService) MockWithdrawRequest(ctx context.Context, req types.Withdra
 func (s *MockService) MockBuildBatch(ctx context.Context, req types.BuildBatchRequestBody) types.BuildBatchResponse {
 	return types.BuildBatchResponse{
 		SettlementUpdate: s.mockRepository.GetSettlementUpdate(ctx),
+		BatchCommitments: s.mockRepository.GetBatchCommitments(ctx),
 		Witness:          s.mockRepository.GetWitness(ctx),
 		State: types.PartialState{
+			BatchStatus:    "built",
 			ProofStatus:    "idle",
 			WithdrawStatus: "batchBuilt",
 		},
@@ -81,20 +84,21 @@ func (s *MockService) MockGenerateProof(ctx context.Context, req types.GenerateP
 }
 
 func (s *MockService) MockSubmitBatch(ctx context.Context, req types.SubmitBatchRequestBody) types.SubmitBatchResponse {
-	settlement := s.mockRepository.GetSettlementUpdate(ctx)
 	withdrawRecord := s.mockRepository.GetWithdrawRecord(ctx, false)
 
 	return types.SubmitBatchResponse{
 		TxHash:           "0xmocksubmitbatch",
 		Accepted:         true,
 		ProofStatus:      "accepted",
-		SettlementUpdate: settlement,
-		WithdrawRecord:   withdrawRecord,
+		SettlementUpdate: s.mockRepository.GetSettlementUpdate(ctx),
+		BatchCommitments: s.mockRepository.GetBatchCommitments(ctx),
+		WithdrawRecords:  []types.WithdrawRecord{withdrawRecord},
 		State: types.PartialState{
 			CurrentStateRoot: "0xrootB",
 			DepositStatus:    "processed",
 			ProofStatus:      "accepted",
 			WithdrawStatus:   "readyToClaim",
+			BatchStatus:      "accepted",
 		},
 	}
 }
@@ -105,9 +109,13 @@ func (s *MockService) MockClaimWithdraw(ctx context.Context, req types.ClaimWith
 	return types.ClaimWithdrawResponse{
 		TxHash:         "0xmockclaimwithdraw",
 		WithdrawRecord: withdrawRecord,
-		Balances: map[string]string{
-			"cosmos1alice/uusdc":  "940",
-			"moduleAccount/uusdc": "60",
+		Balances: types.BalanceSnapshot{
+			UserBalances: map[string]string{
+				"cosmos1alice/uusdc": "940",
+			},
+			ModuleAccountBalance: map[string]string{
+				"uusdc": "60",
+			},
 		},
 		State: types.PartialState{
 			WithdrawStatus: "claimed",

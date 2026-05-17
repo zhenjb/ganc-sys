@@ -23,15 +23,17 @@ func (r *MockRepository) GetState(ctx context.Context) types.AppState {
 			"uusdc": "0",
 		},
 
-		LatestDeposit:         nil,
-		LatestWithdrawRequest: nil,
-		LatestSettlement:      nil,
-		LatestProof:           nil,
-		LatestWithdrawRecord:  nil,
+		LatestDeposit:          nil,
+		LatestWithdrawRequest:  nil,
+		LatestSettlement:       nil,
+		LatestBatchCommitments: nil,
+		LatestProof:            nil,
+		LatestWithdrawRecords:  nil,
 
 		ProofStatus:    "idle",
 		DepositStatus:  "none",
 		WithdrawStatus: "none",
+		BatchStatus:    "none",
 	}
 }
 
@@ -61,25 +63,51 @@ func (r *MockRepository) GetWithdrawRequest(ctx context.Context) types.WithdrawR
 
 func (r *MockRepository) GetSettlementUpdate(ctx context.Context) types.SettlementUpdate {
 	return types.SettlementUpdate{
-		BatchID:             "batch-1",
-		OldStateRoot:        "0xrootA",
-		NewStateRoot:        "0xrootB",
-		DepositID:           "dep-1",
-		DepositAmount:       "100",
-		WithdrawID:          "wd-1",
-		WithdrawAmount:      "40",
-		WithdrawAddress:     "cosmos1alice",
-		WithdrawAddressHash: "0xmockaddresshash",
-		Nullifier:           "0xmocknullifier",
+		BatchID:      "batch-1",
+		OldStateRoot: "0xrootA",
+		NewStateRoot: "0xrootB",
+		Deposits: []types.SettlementDeposit{
+			{
+				DepositID: "dep-1",
+				Owner:     "cosmos1alice",
+				Denom:     "uusdc",
+				Amount:    "100",
+			},
+		},
+		Withdrawals: []types.SettlementWithdrawal{
+			{
+				WithdrawID:      "wd-1",
+				Owner:           "cosmos1alice",
+				Denom:           "uusdc",
+				Amount:          "40",
+				Destination:     "cosmos1alice",
+				DestinationHash: "0xmockdestinationhash",
+				Nullifier:       "0xmocknullifier",
+			},
+		},
+	}
+}
+
+func (r *MockRepository) GetBatchCommitments(ctx context.Context) types.BatchCommitments {
+	return types.BatchCommitments{
+		DepositsRoot:        "0xdepositsRoot",
+		WithdrawalsRoot:     "0xwithdrawalsRoot",
+		NullifiersRoot:      "0xnullifiersRoot",
+		WithdrawOutputsRoot: "0xwithdrawOutputsRoot",
 	}
 }
 
 func (r *MockRepository) GetWitness(ctx context.Context) types.Witness {
 	return types.Witness{
-		UserSecret: "mock-user-secret",
-		Nonce:      "1",
-		OldBalance: "0",
-		NewBalance: "60",
+		Accounts: []types.WitnessAccount{
+			{
+				Owner:      "cosmos1alice",
+				UserSecret: "mock-user-secret",
+				Nonce:      "1",
+				OldBalance: "0",
+				NewBalance: "60",
+			},
+		},
 	}
 }
 
@@ -89,10 +117,10 @@ func (r *MockRepository) GetProofBundle(ctx context.Context) types.ProofBundle {
 		PublicInputs: []string{
 			"0xrootA",
 			"0xrootB",
-			"100",
-			"40",
-			"0xmockaddresshash",
-			"0xmocknullifier",
+			"0xdepositsRoot",
+			"0xwithdrawalsRoot",
+			"0xnullifiersRoot",
+			"0xwithdrawOutputsRoot",
 		},
 		VerificationKeyID: "v1",
 	}

@@ -66,8 +66,8 @@ func (h *MockHandler) MockBuildBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.DepositID == "" || req.WithdrawID == "" {
-		response.Error(w, http.StatusBadRequest, "depositId and withdrawId are required")
+	if len(req.DepositIDs) == 0 || len(req.WithdrawIDs) == 0 {
+		response.Error(w, http.StatusBadRequest, "depositIds and withdrawIds are required")
 		return
 	}
 
@@ -86,6 +86,11 @@ func (h *MockHandler) MockGenerateProof(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if req.BatchCommitments.DepositsRoot == "" {
+		response.Error(w, http.StatusBadRequest, "batchCommitments is required")
+		return
+	}
+
 	result := h.mockService.MockGenerateProof(r.Context(), req)
 	response.JSON(w, http.StatusOK, result)
 }
@@ -96,8 +101,10 @@ func (h *MockHandler) MockSubmitBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.SettlementUpdate.BatchID == "" || req.ProofBundle.Proof == "" {
-		response.Error(w, http.StatusBadRequest, "settlementUpdate and proofBundle are required")
+	if req.SettlementUpdate.BatchID == "" ||
+		req.BatchCommitments.DepositsRoot == "" ||
+		req.ProofBundle.Proof == "" {
+		response.Error(w, http.StatusBadRequest, "settlementUpdate, batchCommitments and proofBundle are required")
 		return
 	}
 

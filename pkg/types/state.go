@@ -6,15 +6,17 @@ type AppState struct {
 	UserBalances         map[string]string `json:"userBalances"`
 	ModuleAccountBalance map[string]string `json:"moduleAccountBalance"`
 
-	LatestDeposit         *DepositRecord    `json:"latestDeposit"`
-	LatestWithdrawRequest *WithdrawRequest  `json:"latestWithdrawRequest"`
-	LatestSettlement      *SettlementUpdate `json:"latestSettlement"`
-	LatestProof           *ProofBundle      `json:"latestProof"`
-	LatestWithdrawRecord  *WithdrawRecord   `json:"latestWithdrawRecord"`
+	LatestDeposit          *DepositRecord    `json:"latestDeposit"`
+	LatestWithdrawRequest  *WithdrawRequest  `json:"latestWithdrawRequest"`
+	LatestSettlement       *SettlementUpdate `json:"latestSettlement"`
+	LatestBatchCommitments *BatchCommitments `json:"latestBatchCommitments"`
+	LatestProof            *ProofBundle      `json:"latestProof"`
+	LatestWithdrawRecords  []WithdrawRecord  `json:"latestWithdrawRecords"`
 
 	ProofStatus    string `json:"proofStatus"`
 	DepositStatus  string `json:"depositStatus"`
 	WithdrawStatus string `json:"withdrawStatus"`
+	BatchStatus    string `json:"batchStatus"`
 }
 
 type PartialState struct {
@@ -22,4 +24,10 @@ type PartialState struct {
 	ProofStatus      string `json:"proofStatus,omitempty"`
 	DepositStatus    string `json:"depositStatus,omitempty"`
 	WithdrawStatus   string `json:"withdrawStatus,omitempty"`
+	BatchStatus      string `json:"batchStatus,omitempty"`
+}
+
+type BalanceSnapshot struct {
+	UserBalances         map[string]string `json:"userBalances"`
+	ModuleAccountBalance map[string]string `json:"moduleAccountBalance"`
 }

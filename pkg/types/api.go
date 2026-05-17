@@ -25,18 +25,20 @@ type WithdrawRequestResponse struct {
 }
 
 type BuildBatchRequestBody struct {
-	DepositID  string `json:"depositId"`
-	WithdrawID string `json:"withdrawId"`
+	DepositIDs  []string `json:"depositIds"`
+	WithdrawIDs []string `json:"withdrawIds"`
 }
 
 type BuildBatchResponse struct {
 	SettlementUpdate SettlementUpdate `json:"settlementUpdate"`
+	BatchCommitments BatchCommitments `json:"batchCommitments"`
 	Witness          Witness          `json:"witness"`
 	State            PartialState     `json:"state"`
 }
 
 type GenerateProofRequestBody struct {
 	SettlementUpdate SettlementUpdate `json:"settlementUpdate"`
+	BatchCommitments BatchCommitments `json:"batchCommitments"`
 	Witness          Witness          `json:"witness"`
 }
 
@@ -47,6 +49,7 @@ type GenerateProofResponse struct {
 
 type SubmitBatchRequestBody struct {
 	SettlementUpdate SettlementUpdate `json:"settlementUpdate"`
+	BatchCommitments BatchCommitments `json:"batchCommitments"`
 	ProofBundle      ProofBundle      `json:"proofBundle"`
 }
 
@@ -55,7 +58,8 @@ type SubmitBatchResponse struct {
 	Accepted         bool             `json:"accepted"`
 	ProofStatus      string           `json:"proofStatus"`
 	SettlementUpdate SettlementUpdate `json:"settlementUpdate"`
-	WithdrawRecord   WithdrawRecord   `json:"withdrawRecord"`
+	BatchCommitments BatchCommitments `json:"batchCommitments"`
+	WithdrawRecords  []WithdrawRecord `json:"withdrawRecords"`
 	State            PartialState     `json:"state"`
 }
 
@@ -64,8 +68,8 @@ type ClaimWithdrawRequestBody struct {
 }
 
 type ClaimWithdrawResponse struct {
-	TxHash         string            `json:"txHash"`
-	WithdrawRecord WithdrawRecord    `json:"withdrawRecord"`
-	Balances       map[string]string `json:"balances"`
-	State          PartialState      `json:"state"`
+	TxHash         string          `json:"txHash"`
+	WithdrawRecord WithdrawRecord  `json:"withdrawRecord"`
+	Balances       BalanceSnapshot `json:"balances"`
+	State          PartialState    `json:"state"`
 }

@@ -3,11 +3,11 @@ package types
 type BatchStatus string
 
 const (
-	BatchStatusPending  BatchStatus = "pending"
-	BatchStatusProved   BatchStatus = "proved"
+	BatchStatusPending   BatchStatus = "pending"
+	BatchStatusProved    BatchStatus = "proved"
 	BatchStatusSubmitted BatchStatus = "submitted"
-	BatchStatusAccepted BatchStatus = "accepted"
-	BatchStatusRejected BatchStatus = "rejected"
+	BatchStatusAccepted  BatchStatus = "accepted"
+	BatchStatusRejected  BatchStatus = "rejected"
 )
 
 type Batch struct {

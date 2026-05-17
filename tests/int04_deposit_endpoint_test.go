@@ -64,6 +64,10 @@ func TestINT04DepositEndpointUsesChainClientContract(t *testing.T) {
 	if body.State.DepositStatus != "locked" {
 		t.Fatalf("expected depositStatus=locked, got %q", body.State.DepositStatus)
 	}
+
+	if body.State.BatchStatus != "none" {
+		t.Fatalf("expected batchStatus=none, got %q", body.State.BatchStatus)
+	}
 }
 
 func TestINT04DepositEndpointRejectsInvalidAmount(t *testing.T) {

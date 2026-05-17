@@ -14,7 +14,8 @@ const stateDomainTag = "zkdex/state/v1"
 //
 // Encoding (locked for STATE-01..03 — P2 may replace with a circuit-friendly
 // hash in ZK-02; the contract is "same input -> same root"):
-//   sha256( "zkdex/state/v1" || canonicalJSON([accounts sorted by (owner,denom)]) )
+//
+//	sha256( "zkdex/state/v1" || canonicalJSON([accounts sorted by (owner,denom)]) )
 //
 // Output is hex-prefixed (`0x...`) per agreements.
 func ComputeRoot(accounts []types.Account) string {
