@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/zhenjb/ganc-sys/internal/chain"
+	"github.com/zhenjb/ganc-sys/internal/event"
 )
 
 func TestINT03LocalChainClientDepositSuccess(t *testing.T) {
@@ -23,20 +24,34 @@ func TestINT03LocalChainClientDepositSuccess(t *testing.T) {
 		t.Fatalf("expected txHash to be generated")
 	}
 
-	if result.DepositRecord.DepositID != "dep-1" {
-		t.Fatalf("expected depositId=dep-1, got %q", result.DepositRecord.DepositID)
+	if result.Height == 0 {
+		t.Fatalf("expected height to be generated")
 	}
 
-	if result.DepositRecord.Owner != "cosmos1alice" {
-		t.Fatalf("expected owner=cosmos1alice, got %q", result.DepositRecord.Owner)
+	if len(result.Events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(result.Events))
 	}
 
-	if result.DepositRecord.Amount != "100" {
-		t.Fatalf("expected amount=100, got %q", result.DepositRecord.Amount)
+	depositEvent := result.Events[0]
+
+	if depositEvent.Type != event.TypeDeposit {
+		t.Fatalf("expected event type %q, got %q", event.TypeDeposit, depositEvent.Type)
 	}
 
-	if result.DepositRecord.Processed {
-		t.Fatalf("expected processed=false")
+	if depositEvent.Attributes["depositId"] != "dep-1" {
+		t.Fatalf("expected depositId=dep-1, got %q", depositEvent.Attributes["depositId"])
+	}
+
+	if depositEvent.Attributes["creator"] != "cosmos1alice" {
+		t.Fatalf("expected creator=cosmos1alice, got %q", depositEvent.Attributes["creator"])
+	}
+
+	if depositEvent.Attributes["denom"] != "uusdc" {
+		t.Fatalf("expected denom=uusdc, got %q", depositEvent.Attributes["denom"])
+	}
+
+	if depositEvent.Attributes["amount"] != "100" {
+		t.Fatalf("expected amount=100, got %q", depositEvent.Attributes["amount"])
 	}
 }
 

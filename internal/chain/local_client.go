@@ -8,20 +8,19 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/zhenjb/ganc-sys/pkg/types"
+	"github.com/zhenjb/ganc-sys/internal/event"
 )
 
 // LocalClient is a local development implementation of the chain Client.
 //
-// TODO(INT-05+ / P1 integration):
-// Replace this local implementation with a real Cosmos client that:
-// 1. builds and signs MsgDeposit,
-// 2. broadcasts the tx,
-// 3. reads tx result/events from the chain,
-// 4. returns event-backed data for the indexer.
+// It simulates the on-chain MsgDeposit flow by returning a tx result containing
+// the same typed event that the real x/zkdex module emits:
 //
-// For now this still creates deterministic local data so P4/P5 can continue
-// developing before the real x/zkdex module is ready.
+//	event type: ob.zkdex.v1.EventDeposit
+//
+// The real CosmosClient should later return the actual tx result and events
+// from the chain. The deposit indexer should not care whether the event came
+// from LocalClient or CosmosClient.
 type LocalClient struct {
 	nextDepositSeq int
 }
@@ -32,39 +31,41 @@ func NewLocalClient() *LocalClient {
 	}
 }
 
-func (c *LocalClient) Deposit(ctx context.Context, req DepositRequest) (DepositResult, error) {
+func (c *LocalClient) Deposit(ctx context.Context, req DepositRequest) (TxResult, error) {
 	if req.Owner == "" || req.Denom == "" || req.Amount == "" {
-		return DepositResult{}, fmt.Errorf("owner, denom and amount are required")
+		return TxResult{}, fmt.Errorf("owner, denom and amount are required")
 	}
 
 	amount, err := strconv.ParseInt(req.Amount, 10, 64)
 	if err != nil || amount <= 0 {
-		return DepositResult{}, fmt.Errorf("amount must be a positive integer string")
+		return TxResult{}, fmt.Errorf("amount must be a positive integer string")
 	}
 
 	depositID := fmt.Sprintf("dep-%d", c.nextDepositSeq)
 	c.nextDepositSeq++
 
+	height := time.Now().Unix()
 	txHash := localTxHash("deposit", req.Owner, req.Denom, req.Amount, depositID)
 
-	// TODO(INT-05):
-	// This DepositRecord should eventually be produced by parsing the
-	// zkdex.deposit_queued event emitted by the chain, not constructed
-	// directly here. The current return shape is kept temporarily so INT-04
-	// remains stable until the event indexer is introduced.
-	depositRecord := types.DepositRecord{
-		DepositID:     depositID,
-		Owner:         req.Owner,
-		Denom:         req.Denom,
-		Amount:        req.Amount,
-		Processed:     false,
-		CreatedHeight: time.Now().Unix(),
-		TxHash:        txHash,
-	}
-
-	return DepositResult{
-		TxHash:        txHash,
-		DepositRecord: depositRecord,
+	return TxResult{
+		TxHash: txHash,
+		Height: height,
+		Events: []event.Event{
+			{
+				Type: event.TypeDeposit,
+				Attributes: map[string]string{
+					// The real chain emits typed EventDeposit fields:
+					// DepositId, Creator, Denom, Amount.
+					//
+					// We use camelCase here for local JSON-style attributes.
+					// DepositIndexer also supports snake_case for Cosmos event compatibility.
+					"depositId": depositID,
+					"creator":   req.Owner,
+					"denom":     req.Denom,
+					"amount":    req.Amount,
+				},
+			},
+		},
 	}, nil
 }
 

@@ -8,12 +8,16 @@ import (
 	"github.com/zhenjb/ganc-sys/internal/api"
 	"github.com/zhenjb/ganc-sys/internal/chain"
 	"github.com/zhenjb/ganc-sys/internal/handler"
+	"github.com/zhenjb/ganc-sys/internal/indexer"
 	"github.com/zhenjb/ganc-sys/internal/repository"
 	"github.com/zhenjb/ganc-sys/internal/service"
+	"github.com/zhenjb/ganc-sys/internal/store"
 )
 
 func main() {
 	port := getenv("PORT", "8080")
+
+	memoryStore := store.NewMemoryStore()
 
 	healthRepository := repository.NewHealthRepository()
 	healthService := service.NewHealthService(healthRepository)
@@ -25,8 +29,9 @@ func main() {
 
 	chainClient := chain.NewLocalClient()
 
-	depositRepository := repository.NewDepositRepository()
-	depositService := service.NewDepositService(depositRepository, chainClient)
+	depositRepository := repository.NewDepositRepository(memoryStore)
+	depositIndexer := indexer.NewDepositIndexer(depositRepository)
+	depositService := service.NewDepositService(depositRepository, depositIndexer, chainClient)
 	depositHandler := handler.NewDepositHandler(depositService)
 
 	withdrawRepository := repository.NewWithdrawRepository()

@@ -43,14 +43,8 @@ func (r *Router) Routes() http.Handler {
 	mux.HandleFunc("GET /api/state", r.stateHandler.GetState)
 
 	mux.HandleFunc("POST /api/deposit", r.depositHandler.CreateDeposit)
-
-	// TODO(INT-05):
-	// Add deposit query routes after event-backed deposit indexing is implemented:
-	// - GET /api/deposits
-	// - GET /api/deposits/{depositId}
-	//
-	// These must read from indexed on-chain deposit events, not from direct
-	// local construction.
+	mux.HandleFunc("GET /api/deposits", r.depositHandler.ListDeposits)
+	mux.HandleFunc("GET /api/deposits/{depositId}", r.depositHandler.GetDeposit)
 
 	mux.HandleFunc("POST /api/withdraw-request", r.withdrawHandler.CreateWithdrawRequest)
 	mux.HandleFunc("POST /api/withdraw/claim", r.withdrawHandler.ClaimWithdraw)

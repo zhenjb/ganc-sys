@@ -2,45 +2,47 @@ package repository
 
 import (
 	"context"
+	"errors"
 
+	"github.com/zhenjb/ganc-sys/internal/store"
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
 
+var ErrDepositNotFound = errors.New("deposit not found")
+
 // DepositRepository owns local access to indexed deposit records.
 //
-// INT-04 status:
-// - POST /api/deposit currently gets DepositRecord directly from chain.LocalClient.
-// - No event indexer/store is connected yet.
-// - This repository exists now so INT-05 can add event-backed deposit indexing cleanly.
+// INT-05 status:
+// - Deposit records are now saved from indexed tx events.
+// - The local store is in-memory for development.
+// - Later this can be replaced by Postgres or another persistent index store.
 //
-// TODO(INT-05):
-// Implement event-backed deposit indexing:
-// 1. consume zkdex.deposit_queued event emitted by x/zkdex,
-// 2. convert event attributes into types.DepositRecord,
-// 3. save DepositRecord into local store/database,
-// 4. expose GetDeposit/ListDeposits for P3 batch builder and P5 UI.
-//
-// Important:
-// The final source of truth for DepositRecord should be indexed on-chain events,
-// not direct construction inside the HTTP handler/service.
-type DepositRepository struct{}
-
-func NewDepositRepository() *DepositRepository {
-	return &DepositRepository{}
+// Source of truth:
+//   - DepositRecord should come from the on-chain EventDeposit event,
+//     enriched with tx hash and tx height from TxResult.
+type DepositRepository struct {
+	store *store.MemoryStore
 }
 
-// GetLocalDepositFixture returns the canonical local deposit fixture.
-//
-// This is not used as the source of truth after INT-05.
-// It is kept only as a local fixture while the event indexer is not connected.
-func (r *DepositRepository) GetLocalDepositFixture(ctx context.Context) types.DepositRecord {
-	return types.DepositRecord{
-		DepositID:     "dep-1",
-		Owner:         "cosmos1alice",
-		Denom:         "uusdc",
-		Amount:        "100",
-		Processed:     false,
-		CreatedHeight: 12345,
-		TxHash:        "0xlocaldeposit",
+func NewDepositRepository(store *store.MemoryStore) *DepositRepository {
+	return &DepositRepository{
+		store: store,
 	}
+}
+
+func (r *DepositRepository) SaveDeposit(ctx context.Context, record types.DepositRecord) {
+	r.store.SaveDeposit(record)
+}
+
+func (r *DepositRepository) GetDeposit(ctx context.Context, depositID string) (types.DepositRecord, error) {
+	record, ok := r.store.GetDeposit(depositID)
+	if !ok {
+		return types.DepositRecord{}, ErrDepositNotFound
+	}
+
+	return record, nil
+}
+
+func (r *DepositRepository) ListDeposits(ctx context.Context) []types.DepositRecord {
+	return r.store.ListDeposits()
 }

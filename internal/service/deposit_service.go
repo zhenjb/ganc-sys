@@ -4,43 +4,40 @@ import (
 	"context"
 
 	"github.com/zhenjb/ganc-sys/internal/chain"
+	"github.com/zhenjb/ganc-sys/internal/indexer"
 	"github.com/zhenjb/ganc-sys/internal/repository"
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
 
 // DepositService owns deposit use cases.
 //
-// INT-04 status:
-// - CreateDeposit uses chain.Client interface.
-// - Current chain implementation is LocalClient.
-// - DepositRecord is still returned directly from the local chain client.
+// INT-05 status:
+// - CreateDeposit calls chain.Client.Deposit.
+// - The chain client returns TxResult with events.
+// - DepositIndexer consumes EventDeposit and saves DepositRecord.
+// - Response returns the indexed DepositRecord.
 //
-// TODO(INT-05):
-// Change the flow to:
-// 1. chainClient.Deposit(...) broadcasts MsgDeposit,
-// 2. chain returns tx result with emitted events,
-// 3. DepositIndexer consumes zkdex.deposit_queued event,
-// 4. DepositRepository stores indexed DepositRecord,
-// 5. response returns the indexed DepositRecord.
-//
-// The final source of truth for deposits must be indexed on-chain events.
+// Later, LocalClient can be replaced by CosmosClient without changing this flow.
 type DepositService struct {
 	depositRepository *repository.DepositRepository
+	depositIndexer    *indexer.DepositIndexer
 	chainClient       chain.Client
 }
 
 func NewDepositService(
 	depositRepository *repository.DepositRepository,
+	depositIndexer *indexer.DepositIndexer,
 	chainClient chain.Client,
 ) *DepositService {
 	return &DepositService{
 		depositRepository: depositRepository,
+		depositIndexer:    depositIndexer,
 		chainClient:       chainClient,
 	}
 }
 
 func (s *DepositService) CreateDeposit(ctx context.Context, req types.DepositRequestBody) (types.DepositResponse, error) {
-	result, err := s.chainClient.Deposit(ctx, chain.DepositRequest{
+	txResult, err := s.chainClient.Deposit(ctx, chain.DepositRequest{
 		Owner:  req.Owner,
 		Denom:  req.Denom,
 		Amount: req.Amount,
@@ -49,18 +46,37 @@ func (s *DepositService) CreateDeposit(ctx context.Context, req types.DepositReq
 		return types.DepositResponse{}, err
 	}
 
-	// TODO(INT-05):
-	// Do not rely on result.DepositRecord as final source of truth.
-	// Replace this with the record produced by the event indexer.
+	depositRecord, err := s.depositIndexer.IndexDepositFromTx(ctx, txResult)
+	if err != nil {
+		return types.DepositResponse{}, err
+	}
+
 	return types.DepositResponse{
-		TxHash:        result.TxHash,
-		DepositRecord: result.DepositRecord,
+		TxHash:        txResult.TxHash,
+		DepositRecord: depositRecord,
 		State: types.PartialState{
 			CurrentStateRoot: "0xrootA",
-			DepositStatus:    "locked",
+			DepositStatus:    "indexed",
 			ProofStatus:      "idle",
 			WithdrawStatus:   "none",
 			BatchStatus:      "none",
 		},
+	}, nil
+}
+
+func (s *DepositService) ListDeposits(ctx context.Context) types.ListDepositsResponse {
+	return types.ListDepositsResponse{
+		Deposits: s.depositRepository.ListDeposits(ctx),
+	}
+}
+
+func (s *DepositService) GetDeposit(ctx context.Context, depositID string) (types.GetDepositResponse, error) {
+	record, err := s.depositRepository.GetDeposit(ctx, depositID)
+	if err != nil {
+		return types.GetDepositResponse{}, err
+	}
+
+	return types.GetDepositResponse{
+		DepositRecord: record,
 	}, nil
 }

@@ -7,7 +7,7 @@ import (
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
 
-func TestINT02GetStateMockContract(t *testing.T) {
+func TestINT02GetStateLocalContract(t *testing.T) {
 	server := newTestServer()
 
 	rec := performRequest(t, server, http.MethodGet, "/api/state", nil)
@@ -18,8 +18,8 @@ func TestINT02GetStateMockContract(t *testing.T) {
 
 	body := decodeJSON[types.AppState](t, rec)
 
-	if body.Mode != "mock" {
-		t.Fatalf("expected mode=mock, got %q", body.Mode)
+	if body.Mode != "local" {
+		t.Fatalf("expected mode=local, got %q", body.Mode)
 	}
 
 	if body.CurrentStateRoot != "0xrootA" {
@@ -67,7 +67,7 @@ func TestINT02GetStateMockContract(t *testing.T) {
 	}
 }
 
-func TestINT02WithdrawRequestMockContract(t *testing.T) {
+func TestINT02WithdrawRequestLocalContract(t *testing.T) {
 	server := newTestServer()
 
 	req := types.WithdrawRequestBody{
@@ -89,8 +89,20 @@ func TestINT02WithdrawRequestMockContract(t *testing.T) {
 		t.Fatalf("expected withdrawId=wd-1, got %q", body.WithdrawRequest.WithdrawID)
 	}
 
+	if body.WithdrawRequest.Owner != "cosmos1alice" {
+		t.Fatalf("expected owner=cosmos1alice, got %q", body.WithdrawRequest.Owner)
+	}
+
+	if body.WithdrawRequest.Denom != "uusdc" {
+		t.Fatalf("expected denom=uusdc, got %q", body.WithdrawRequest.Denom)
+	}
+
 	if body.WithdrawRequest.Amount != "40" {
 		t.Fatalf("expected amount=40, got %q", body.WithdrawRequest.Amount)
+	}
+
+	if body.WithdrawRequest.Destination != "cosmos1alice" {
+		t.Fatalf("expected destination=cosmos1alice, got %q", body.WithdrawRequest.Destination)
 	}
 
 	if body.State.WithdrawStatus != "requested" {
@@ -98,7 +110,7 @@ func TestINT02WithdrawRequestMockContract(t *testing.T) {
 	}
 }
 
-func TestINT02BuildBatchMockContract(t *testing.T) {
+func TestINT02BuildBatchLocalContract(t *testing.T) {
 	server := newTestServer()
 
 	req := types.BuildBatchRequestBody{
@@ -127,15 +139,23 @@ func TestINT02BuildBatchMockContract(t *testing.T) {
 	}
 
 	if len(body.SettlementUpdate.Deposits) != 1 {
-		t.Fatalf("expected one deposit in mock batch, got %d", len(body.SettlementUpdate.Deposits))
+		t.Fatalf("expected one deposit in local batch, got %d", len(body.SettlementUpdate.Deposits))
 	}
 
 	if body.SettlementUpdate.Deposits[0].DepositID != "dep-1" {
 		t.Fatalf("expected depositId=dep-1, got %q", body.SettlementUpdate.Deposits[0].DepositID)
 	}
 
+	if body.SettlementUpdate.Deposits[0].Owner != "cosmos1alice" {
+		t.Fatalf("expected deposit owner=cosmos1alice, got %q", body.SettlementUpdate.Deposits[0].Owner)
+	}
+
+	if body.SettlementUpdate.Deposits[0].Amount != "100" {
+		t.Fatalf("expected deposit amount=100, got %q", body.SettlementUpdate.Deposits[0].Amount)
+	}
+
 	if len(body.SettlementUpdate.Withdrawals) != 1 {
-		t.Fatalf("expected one withdrawal in mock batch, got %d", len(body.SettlementUpdate.Withdrawals))
+		t.Fatalf("expected one withdrawal in local batch, got %d", len(body.SettlementUpdate.Withdrawals))
 	}
 
 	if body.SettlementUpdate.Withdrawals[0].WithdrawID != "wd-1" {
@@ -146,16 +166,44 @@ func TestINT02BuildBatchMockContract(t *testing.T) {
 		t.Fatalf("expected destinationHash=0xmockdestinationhash, got %q", body.SettlementUpdate.Withdrawals[0].DestinationHash)
 	}
 
+	if body.SettlementUpdate.Withdrawals[0].Nullifier != "0xmocknullifier" {
+		t.Fatalf("expected nullifier=0xmocknullifier, got %q", body.SettlementUpdate.Withdrawals[0].Nullifier)
+	}
+
 	if body.BatchCommitments.DepositsRoot != "0xdepositsRoot" {
 		t.Fatalf("expected depositsRoot=0xdepositsRoot, got %q", body.BatchCommitments.DepositsRoot)
+	}
+
+	if body.BatchCommitments.WithdrawalsRoot != "0xwithdrawalsRoot" {
+		t.Fatalf("expected withdrawalsRoot=0xwithdrawalsRoot, got %q", body.BatchCommitments.WithdrawalsRoot)
+	}
+
+	if body.BatchCommitments.NullifiersRoot != "0xnullifiersRoot" {
+		t.Fatalf("expected nullifiersRoot=0xnullifiersRoot, got %q", body.BatchCommitments.NullifiersRoot)
+	}
+
+	if body.BatchCommitments.WithdrawOutputsRoot != "0xwithdrawOutputsRoot" {
+		t.Fatalf("expected withdrawOutputsRoot=0xwithdrawOutputsRoot, got %q", body.BatchCommitments.WithdrawOutputsRoot)
 	}
 
 	if len(body.Witness.Accounts) != 1 {
 		t.Fatalf("expected witness.accounts length 1, got %d", len(body.Witness.Accounts))
 	}
 
+	if body.Witness.Accounts[0].Owner != "cosmos1alice" {
+		t.Fatalf("expected witness owner=cosmos1alice, got %q", body.Witness.Accounts[0].Owner)
+	}
+
+	if body.Witness.Accounts[0].UserSecret != "mock-user-secret" {
+		t.Fatalf("expected witness userSecret=mock-user-secret, got %q", body.Witness.Accounts[0].UserSecret)
+	}
+
+	if body.Witness.Accounts[0].OldBalance != "0" {
+		t.Fatalf("expected witness oldBalance=0, got %q", body.Witness.Accounts[0].OldBalance)
+	}
+
 	if body.Witness.Accounts[0].NewBalance != "60" {
-		t.Fatalf("expected witness account newBalance=60, got %q", body.Witness.Accounts[0].NewBalance)
+		t.Fatalf("expected witness newBalance=60, got %q", body.Witness.Accounts[0].NewBalance)
 	}
 
 	if body.State.BatchStatus != "built" {
@@ -167,7 +215,7 @@ func TestINT02BuildBatchMockContract(t *testing.T) {
 	}
 }
 
-func TestINT02GenerateProofMockContract(t *testing.T) {
+func TestINT02GenerateProofLocalContract(t *testing.T) {
 	server := newTestServer()
 
 	req := canonicalGenerateProofRequest()
@@ -217,7 +265,7 @@ func TestINT02GenerateProofMockContract(t *testing.T) {
 	}
 }
 
-func TestINT02SubmitBatchMockContract(t *testing.T) {
+func TestINT02SubmitBatchLocalContract(t *testing.T) {
 	server := newTestServer()
 
 	req := types.SubmitBatchRequestBody{
@@ -261,8 +309,24 @@ func TestINT02SubmitBatchMockContract(t *testing.T) {
 		t.Fatalf("expected one withdrawRecord, got %d", len(body.WithdrawRecords))
 	}
 
+	if body.WithdrawRecords[0].WithdrawID != "wd-1" {
+		t.Fatalf("expected withdrawId=wd-1, got %q", body.WithdrawRecords[0].WithdrawID)
+	}
+
 	if body.WithdrawRecords[0].Claimed {
 		t.Fatalf("expected withdrawRecords[0].claimed=false after submit batch")
+	}
+
+	if body.State.CurrentStateRoot != "0xrootB" {
+		t.Fatalf("expected currentStateRoot=0xrootB, got %q", body.State.CurrentStateRoot)
+	}
+
+	if body.State.DepositStatus != "processed" {
+		t.Fatalf("expected depositStatus=processed, got %q", body.State.DepositStatus)
+	}
+
+	if body.State.ProofStatus != "accepted" {
+		t.Fatalf("expected proofStatus=accepted, got %q", body.State.ProofStatus)
 	}
 
 	if body.State.WithdrawStatus != "readyToClaim" {
@@ -274,7 +338,7 @@ func TestINT02SubmitBatchMockContract(t *testing.T) {
 	}
 }
 
-func TestINT02ClaimWithdrawMockContract(t *testing.T) {
+func TestINT02ClaimWithdrawLocalContract(t *testing.T) {
 	server := newTestServer()
 
 	req := types.ClaimWithdrawRequestBody{

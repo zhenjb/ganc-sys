@@ -8,7 +8,7 @@ import (
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
 
-func TestINT04DepositEndpointUsesChainClientContract(t *testing.T) {
+func TestINT04DepositEndpointUsesChainClientAndIndexerContract(t *testing.T) {
 	server := newTestServer()
 
 	req := types.DepositRequestBody{
@@ -37,6 +37,10 @@ func TestINT04DepositEndpointUsesChainClientContract(t *testing.T) {
 		t.Fatalf("expected depositRecord.txHash to match txHash")
 	}
 
+	if body.DepositRecord.CreatedHeight == 0 {
+		t.Fatalf("expected depositRecord.createdHeight to be indexed from tx height")
+	}
+
 	if body.DepositRecord.DepositID != "dep-1" {
 		t.Fatalf("expected depositId=dep-1, got %q", body.DepositRecord.DepositID)
 	}
@@ -61,8 +65,8 @@ func TestINT04DepositEndpointUsesChainClientContract(t *testing.T) {
 		t.Fatalf("expected currentStateRoot=0xrootA, got %q", body.State.CurrentStateRoot)
 	}
 
-	if body.State.DepositStatus != "locked" {
-		t.Fatalf("expected depositStatus=locked, got %q", body.State.DepositStatus)
+	if body.State.DepositStatus != "indexed" {
+		t.Fatalf("expected depositStatus=indexed, got %q", body.State.DepositStatus)
 	}
 
 	if body.State.BatchStatus != "none" {

@@ -73,3 +73,11 @@ type ClaimWithdrawResponse struct {
 	Balances       BalanceSnapshot `json:"balances"`
 	State          PartialState    `json:"state"`
 }
+
+type ListDepositsResponse struct {
+	Deposits []DepositRecord `json:"deposits"`
+}
+
+type GetDepositResponse struct {
+	DepositRecord DepositRecord `json:"depositRecord"`
+}
