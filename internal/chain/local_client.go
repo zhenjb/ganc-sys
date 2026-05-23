@@ -11,17 +11,28 @@ import (
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
 
-type MockClient struct {
+// LocalClient is a local development implementation of the chain Client.
+//
+// TODO(INT-05+ / P1 integration):
+// Replace this local implementation with a real Cosmos client that:
+// 1. builds and signs MsgDeposit,
+// 2. broadcasts the tx,
+// 3. reads tx result/events from the chain,
+// 4. returns event-backed data for the indexer.
+//
+// For now this still creates deterministic local data so P4/P5 can continue
+// developing before the real x/zkdex module is ready.
+type LocalClient struct {
 	nextDepositSeq int
 }
 
-func NewMockClient() *MockClient {
-	return &MockClient{
+func NewLocalClient() *LocalClient {
+	return &LocalClient{
 		nextDepositSeq: 1,
 	}
 }
 
-func (c *MockClient) Deposit(ctx context.Context, req DepositRequest) (DepositResult, error) {
+func (c *LocalClient) Deposit(ctx context.Context, req DepositRequest) (DepositResult, error) {
 	if req.Owner == "" || req.Denom == "" || req.Amount == "" {
 		return DepositResult{}, fmt.Errorf("owner, denom and amount are required")
 	}
@@ -34,8 +45,13 @@ func (c *MockClient) Deposit(ctx context.Context, req DepositRequest) (DepositRe
 	depositID := fmt.Sprintf("dep-%d", c.nextDepositSeq)
 	c.nextDepositSeq++
 
-	txHash := mockTxHash("deposit", req.Owner, req.Denom, req.Amount, depositID)
+	txHash := localTxHash("deposit", req.Owner, req.Denom, req.Amount, depositID)
 
+	// TODO(INT-05):
+	// This DepositRecord should eventually be produced by parsing the
+	// zkdex.deposit_queued event emitted by the chain, not constructed
+	// directly here. The current return shape is kept temporarily so INT-04
+	// remains stable until the event indexer is introduced.
 	depositRecord := types.DepositRecord{
 		DepositID:     depositID,
 		Owner:         req.Owner,
@@ -52,7 +68,7 @@ func (c *MockClient) Deposit(ctx context.Context, req DepositRequest) (DepositRe
 	}, nil
 }
 
-func mockTxHash(parts ...string) string {
+func localTxHash(parts ...string) string {
 	h := sha256.New()
 
 	for _, part := range parts {

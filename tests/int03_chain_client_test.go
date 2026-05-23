@@ -7,8 +7,8 @@ import (
 	"github.com/zhenjb/ganc-sys/internal/chain"
 )
 
-func TestINT03MockChainClientDepositSuccess(t *testing.T) {
-	client := chain.NewMockClient()
+func TestINT03LocalChainClientDepositSuccess(t *testing.T) {
+	client := chain.NewLocalClient()
 
 	result, err := client.Deposit(context.Background(), chain.DepositRequest{
 		Owner:  "cosmos1alice",
@@ -40,8 +40,8 @@ func TestINT03MockChainClientDepositSuccess(t *testing.T) {
 	}
 }
 
-func TestINT03MockChainClientDepositRejectsInvalidAmount(t *testing.T) {
-	client := chain.NewMockClient()
+func TestINT03LocalChainClientDepositRejectsInvalidAmount(t *testing.T) {
+	client := chain.NewLocalClient()
 
 	_, err := client.Deposit(context.Background(), chain.DepositRequest{
 		Owner:  "cosmos1alice",
@@ -53,8 +53,8 @@ func TestINT03MockChainClientDepositRejectsInvalidAmount(t *testing.T) {
 	}
 }
 
-func TestINT03MockChainClientDepositRejectsMissingFields(t *testing.T) {
-	client := chain.NewMockClient()
+func TestINT03LocalChainClientDepositRejectsMissingFields(t *testing.T) {
+	client := chain.NewLocalClient()
 
 	_, err := client.Deposit(context.Background(), chain.DepositRequest{
 		Owner:  "cosmos1alice",

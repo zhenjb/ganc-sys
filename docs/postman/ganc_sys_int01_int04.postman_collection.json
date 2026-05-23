@@ -1,0 +1,663 @@
+{
+  "info": {
+    "name": "GANC System Backend API \u2014 INT-01 to INT-04",
+    "description": "Postman collection for current GANC/ZKDEX backend API. Batch-shaped contracts: deposits[], withdrawals[], batchCommitments, witness.accounts[], withdrawRecords[].",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    }
+  ],
+  "item": [
+    {
+      "name": "INT-01 Health",
+      "item": [
+        {
+          "name": "GET /api/health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "health"
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('response is JSON', function () { pm.response.to.be.json; });",
+                  "pm.test('health ok', function () { const j = pm.response.json(); pm.expect(j.status).to.eql('ok'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "INT-02 State",
+      "item": [
+        {
+          "name": "GET /api/state",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/state",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "state"
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('response is JSON', function () { pm.response.to.be.json; });",
+                  "pm.test('initial state', function () { const j = pm.response.json(); pm.expect(j.currentStateRoot).to.eql('0xrootA'); pm.expect(j.batchStatus).to.eql('none'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "INT-04 Deposit",
+      "item": [
+        {
+          "name": "POST /api/deposit \u2014 success",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/deposit",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "deposit"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"owner\": \"cosmos1alice\",\n  \"denom\": \"uusdc\",\n  \"amount\": \"100\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('response is JSON', function () { pm.response.to.be.json; });",
+                  "pm.test('deposit contract', function () { const j = pm.response.json(); pm.expect(j.txHash).to.match(/^0x/); pm.expect(j.depositRecord.depositId).to.eql('dep-1'); pm.expect(j.state.depositStatus).to.eql('locked'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/deposit \u2014 invalid amount",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/deposit",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "deposit"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"owner\": \"cosmos1alice\",\n  \"denom\": \"uusdc\",\n  \"amount\": \"abc\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', function () { pm.response.to.have.status(400); });",
+                  "pm.test('has error', function () { pm.expect(pm.response.json()).to.have.property('error'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/deposit \u2014 missing amount",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/deposit",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "deposit"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"owner\": \"cosmos1alice\",\n  \"denom\": \"uusdc\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', function () { pm.response.to.have.status(400); });",
+                  "pm.test('has error', function () { pm.expect(pm.response.json()).to.have.property('error'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "INT-02 Withdraw",
+      "item": [
+        {
+          "name": "POST /api/withdraw-request",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/withdraw-request",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "withdraw-request"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"owner\": \"cosmos1alice\",\n  \"denom\": \"uusdc\",\n  \"amount\": \"40\",\n  \"destination\": \"cosmos1alice\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('response is JSON', function () { pm.response.to.be.json; });",
+                  "pm.test('withdraw request contract', function () { const j = pm.response.json(); pm.expect(j.withdrawRequest.withdrawId).to.eql('wd-1'); pm.expect(j.state.withdrawStatus).to.eql('requested'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/withdraw/claim",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/withdraw/claim",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "withdraw",
+                "claim"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"withdrawId\": \"wd-1\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('response is JSON', function () { pm.response.to.be.json; });",
+                  "pm.test('claim contract', function () { const j = pm.response.json(); pm.expect(j.withdrawRecord.claimed).to.eql(true); pm.expect(j.balances.userBalances['cosmos1alice/uusdc']).to.eql('940'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/withdraw/claim \u2014 missing withdrawId",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/withdraw/claim",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "withdraw",
+                "claim"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', function () { pm.response.to.have.status(400); });",
+                  "pm.test('has error', function () { pm.expect(pm.response.json()).to.have.property('error'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "INT-02 Batch",
+      "item": [
+        {
+          "name": "POST /api/batch/build",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/batch/build",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "batch",
+                "build"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"depositIds\": [\n    \"dep-1\"\n  ],\n  \"withdrawIds\": [\n    \"wd-1\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('response is JSON', function () { pm.response.to.be.json; });",
+                  "pm.test('batch build contract', function () { const j = pm.response.json(); pm.expect(j.settlementUpdate.deposits).to.be.an('array'); pm.expect(j.settlementUpdate.withdrawals).to.be.an('array'); pm.expect(j.batchCommitments.depositsRoot).to.eql('0xdepositsRoot'); pm.expect(j.state.batchStatus).to.eql('built'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/batch/build \u2014 missing withdrawIds",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/batch/build",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "batch",
+                "build"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"depositIds\": [\n    \"dep-1\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', function () { pm.response.to.have.status(400); });",
+                  "pm.test('has error', function () { pm.expect(pm.response.json()).to.have.property('error'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/batch/submit",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/batch/submit",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "batch",
+                "submit"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"settlementUpdate\": {\n    \"batchId\": \"batch-1\",\n    \"oldStateRoot\": \"0xrootA\",\n    \"newStateRoot\": \"0xrootB\",\n    \"deposits\": [\n      {\n        \"depositId\": \"dep-1\",\n        \"owner\": \"cosmos1alice\",\n        \"denom\": \"uusdc\",\n        \"amount\": \"100\"\n      }\n    ],\n    \"withdrawals\": [\n      {\n        \"withdrawId\": \"wd-1\",\n        \"owner\": \"cosmos1alice\",\n        \"denom\": \"uusdc\",\n        \"amount\": \"40\",\n        \"destination\": \"cosmos1alice\",\n        \"destinationHash\": \"0xmockdestinationhash\",\n        \"nullifier\": \"0xmocknullifier\"\n      }\n    ]\n  },\n  \"batchCommitments\": {\n    \"depositsRoot\": \"0xdepositsRoot\",\n    \"withdrawalsRoot\": \"0xwithdrawalsRoot\",\n    \"nullifiersRoot\": \"0xnullifiersRoot\",\n    \"withdrawOutputsRoot\": \"0xwithdrawOutputsRoot\"\n  },\n  \"proofBundle\": {\n    \"proof\": \"0xmockproof\",\n    \"publicInputs\": [\n      \"0xrootA\",\n      \"0xrootB\",\n      \"0xdepositsRoot\",\n      \"0xwithdrawalsRoot\",\n      \"0xnullifiersRoot\",\n      \"0xwithdrawOutputsRoot\"\n    ],\n    \"verificationKeyId\": \"v1\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('response is JSON', function () { pm.response.to.be.json; });",
+                  "pm.test('batch submit contract', function () { const j = pm.response.json(); pm.expect(j.accepted).to.eql(true); pm.expect(j.withdrawRecords).to.be.an('array'); pm.expect(j.state.batchStatus).to.eql('accepted'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/batch/submit \u2014 missing proofBundle",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/batch/submit",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "batch",
+                "submit"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"settlementUpdate\": {\n    \"batchId\": \"batch-1\"\n  },\n  \"batchCommitments\": {\n    \"depositsRoot\": \"0xdepositsRoot\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', function () { pm.response.to.have.status(400); });",
+                  "pm.test('has error', function () { pm.expect(pm.response.json()).to.have.property('error'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "INT-02 Proof",
+      "item": [
+        {
+          "name": "POST /api/proof/generate",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/proof/generate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "proof",
+                "generate"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"settlementUpdate\": {\n    \"batchId\": \"batch-1\",\n    \"oldStateRoot\": \"0xrootA\",\n    \"newStateRoot\": \"0xrootB\",\n    \"deposits\": [\n      {\n        \"depositId\": \"dep-1\",\n        \"owner\": \"cosmos1alice\",\n        \"denom\": \"uusdc\",\n        \"amount\": \"100\"\n      }\n    ],\n    \"withdrawals\": [\n      {\n        \"withdrawId\": \"wd-1\",\n        \"owner\": \"cosmos1alice\",\n        \"denom\": \"uusdc\",\n        \"amount\": \"40\",\n        \"destination\": \"cosmos1alice\",\n        \"destinationHash\": \"0xmockdestinationhash\",\n        \"nullifier\": \"0xmocknullifier\"\n      }\n    ]\n  },\n  \"batchCommitments\": {\n    \"depositsRoot\": \"0xdepositsRoot\",\n    \"withdrawalsRoot\": \"0xwithdrawalsRoot\",\n    \"nullifiersRoot\": \"0xnullifiersRoot\",\n    \"withdrawOutputsRoot\": \"0xwithdrawOutputsRoot\"\n  },\n  \"witness\": {\n    \"accounts\": [\n      {\n        \"owner\": \"cosmos1alice\",\n        \"userSecret\": \"mock-user-secret\",\n        \"nonce\": \"1\",\n        \"oldBalance\": \"0\",\n        \"newBalance\": \"60\"\n      }\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('response is JSON', function () { pm.response.to.be.json; });",
+                  "pm.test('proof contract', function () { const j = pm.response.json(); pm.expect(j.proofBundle.publicInputs).to.eql(['0xrootA','0xrootB','0xdepositsRoot','0xwithdrawalsRoot','0xnullifiersRoot','0xwithdrawOutputsRoot']); pm.expect(j.state.proofStatus).to.eql('ready'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/proof/generate \u2014 missing batchCommitments",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/proof/generate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "proof",
+                "generate"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"settlementUpdate\": {\n    \"batchId\": \"batch-1\"\n  },\n  \"witness\": {\n    \"accounts\": [\n      {\n        \"owner\": \"cosmos1alice\",\n        \"userSecret\": \"mock-user-secret\",\n        \"nonce\": \"1\",\n        \"oldBalance\": \"0\",\n        \"newBalance\": \"60\"\n      }\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', function () { pm.response.to.have.status(400); });",
+                  "pm.test('has error', function () { pm.expect(pm.response.json()).to.have.property('error'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

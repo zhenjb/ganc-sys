@@ -19,15 +19,35 @@ func newTestServer() http.Handler {
 	healthService := service.NewHealthService(healthRepository)
 	healthHandler := handler.NewHealthHandler(healthService)
 
-	chainClient := chain.NewMockClient()
+	stateRepository := repository.NewStateRepository()
+	stateService := service.NewStateService(stateRepository)
+	stateHandler := handler.NewStateHandler(stateService)
 
-	mockRepository := repository.NewMockRepository()
-	mockService := service.NewMockService(mockRepository, chainClient)
-	mockHandler := handler.NewMockHandler(mockService)
+	chainClient := chain.NewLocalClient()
+
+	depositRepository := repository.NewDepositRepository()
+	depositService := service.NewDepositService(depositRepository, chainClient)
+	depositHandler := handler.NewDepositHandler(depositService)
+
+	withdrawRepository := repository.NewWithdrawRepository()
+	withdrawService := service.NewWithdrawService(withdrawRepository)
+	withdrawHandler := handler.NewWithdrawHandler(withdrawService)
+
+	batchRepository := repository.NewBatchRepository()
+	batchService := service.NewBatchService(batchRepository, withdrawRepository)
+	batchHandler := handler.NewBatchHandler(batchService)
+
+	proofRepository := repository.NewProofRepository()
+	proofService := service.NewProofService(proofRepository)
+	proofHandler := handler.NewProofHandler(proofService)
 
 	router := api.NewRouter(api.RouterDeps{
-		HealthHandler: healthHandler,
-		MockHandler:   mockHandler,
+		HealthHandler:   healthHandler,
+		StateHandler:    stateHandler,
+		DepositHandler:  depositHandler,
+		WithdrawHandler: withdrawHandler,
+		BatchHandler:    batchHandler,
+		ProofHandler:    proofHandler,
 	})
 
 	return router.Routes()
