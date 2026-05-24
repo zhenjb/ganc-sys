@@ -1,5 +1,5 @@
 // gen_state_vectors materializes the canonical Alice 100/40 vectors under
-// testvectors/alice_100_40/ for P3 STATE-02/STATE-03/STATE-04.
+// testvectors/alice_100_40/ for P3 STATE-02..STATE-09.
 //
 // It is run from the repo root:
 //
@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/zhenjb/ganc-sys/internal/batch"
 	"github.com/zhenjb/ganc-sys/internal/state"
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
@@ -67,6 +68,13 @@ func main() {
 		Note:     "STATE-02 — initial local state, empty accounts. rootA.",
 	}
 	write("initial_state.json", initial)
+
+	// STATE-09 needs oldBalance = balance BEFORE the batch applies.
+	// Captured here so subsequent ApplyDeposit / ApplyWithdrawal do not
+	// shadow it (Account() reads through the latest snapshot). For the
+	// canonical Alice vector this is "0" because no account entry
+	// exists yet — Account() returns the zero account.
+	oldBalance := ls.Account(aliceAddr, denom).Balance
 
 	dep1 := types.DepositRecord{
 		DepositID:     "dep-1",
@@ -150,6 +158,9 @@ func main() {
 	})
 
 	// STATE-05 — apply the canonical Alice withdrawal (40 uusdc).
+	// Capture oldRoot (== rootB) BEFORE the apply so STATE-08 has the
+	// pre-withdrawal snapshot to bind into the SettlementUpdate.
+	oldRoot := ls.Root()
 	rootC, err := ls.ApplyWithdrawal(wdReq, nullifier)
 	if err != nil {
 		die("apply withdrawal: %v", err)
@@ -160,6 +171,48 @@ func main() {
 		Note:     "STATE-05 — after applying wd-1, Alice balance=60, nonce=1. rootC. Nullifier is a placeholder until STATE-06/ZK-02 locks the hash scheme.",
 	}
 	write("state_after_withdrawal.json", afterWithdraw)
+
+	// STATE-08 — assemble the canonical SettlementUpdate. The builder
+	// re-derives withdrawAddressHash from req.Destination and rejects
+	// if it does not match `addrHash`, so any drift between STATE-07's
+	// canonical vector and what the prover/verifier will see is caught
+	// here, not at proof submission time.
+	sub := batch.NewSettlementUpdateBuilder()
+	settlementInputs := batch.SettlementInputs{
+		OldStateRoot:        oldRoot,
+		NewStateRoot:        rootC,
+		Deposit:             dep1,
+		Withdraw:            wdReq,
+		Nullifier:           nullifier,
+		WithdrawAddressHash: addrHash,
+	}
+	upd, err := sub.Build(settlementInputs)
+	if err != nil {
+		die("build settlement update: %v", err)
+	}
+	write("settlement_update_batch_1.json", upd)
+
+	// STATE-09 — assemble the canonical Witness for the P2 prover.
+	// newBalance is the post-withdrawal balance Alice holds in the
+	// off-chain mirror; combined with oldBalance (captured before
+	// ApplyDeposit) and the batch amounts, the ZK-04 constraint
+	//   newBalance + withdrawAmount == oldBalance + depositAmount
+	// pins down the entire balance transition. The witness file is
+	// PRIVATE to the prover host; it must NEVER be checked in against
+	// a real user secret. The "alice_secret" string here is the demo
+	// secret only.
+	newBalance := ls.Account(aliceAddr, denom).Balance
+	wbuilder := batch.NewWitnessBuilder()
+	witness, err := wbuilder.Build(batch.WitnessInputs{
+		UserSecret: aliceSecret,
+		Settlement: settlementInputs,
+		OldBalance: oldBalance,
+		NewBalance: newBalance,
+	})
+	if err != nil {
+		die("build witness: %v", err)
+	}
+	write("witness_batch_1.json", witness)
 
 	// Sanity: post-condition required by the STATE-04 changenote — after
 	// STATE-05, account.Nonce must equal request.Nonce.
@@ -177,6 +230,8 @@ func main() {
 	fmt.Println("withdrawRequest:", wdReq.WithdrawID, "nonce:", wdReq.Nonce)
 	fmt.Println("nullifier (placeholder):", nullifier)
 	fmt.Println("withdrawAddressHash (placeholder):", addrHash)
+	fmt.Println("settlementUpdate:", upd.BatchID, "oldRoot:", upd.OldStateRoot, "newRoot:", upd.NewStateRoot)
+	fmt.Println("witness: oldBalance:", witness.OldBalance, "newBalance:", witness.NewBalance, "nonce:", witness.Nonce)
 	fmt.Println("wrote vectors into", outDir)
 }
 

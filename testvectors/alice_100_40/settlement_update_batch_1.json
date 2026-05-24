@@ -1,0 +1,12 @@
+{
+  "batchId": "batch-1",
+  "oldStateRoot": "0x9b325b4150d417adfd816930b6f291aaf9493995fe0f960864c616ff178f8620",
+  "newStateRoot": "0x44d60f77db879799be6212c46d198243cbe2fe2969901ca3663dfb204276250c",
+  "depositId": "dep-1",
+  "depositAmount": "100",
+  "withdrawId": "wd-1",
+  "withdrawAmount": "40",
+  "withdrawAddress": "cosmos1alice",
+  "withdrawAddressHash": "0xa75ac956249df4c45b83281c5af6187c59df9709fd1c25b5e61b12d71a8eb417",
+  "nullifier": "0x1a1fdf4ccecb7040b7cd7e125226d14ed7717618d996dab969d4cb12550b22f7"
+}
