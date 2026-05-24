@@ -23,15 +23,27 @@ import (
 )
 
 const (
-	outDir    = "testvectors/alice_100_40"
-	aliceAddr = "cosmos1alice"
-	denom     = "uusdc"
+	outDir       = "testvectors/alice_100_40"
+	aliceAddr    = "cosmos1alice"
+	denom        = "uusdc"
+	aliceSecret  = "alice_secret"
 )
 
 type stateSnapshot struct {
 	Root     string           `json:"root"`
 	Accounts []types.Account  `json:"accounts"`
 	Note     string           `json:"note,omitempty"`
+}
+
+type nullifierVector struct {
+	WithdrawID    string `json:"withdrawId"`
+	Owner         string `json:"owner"`
+	Nonce         string `json:"nonce"`
+	UserSecret    string `json:"userSecret"`
+	DomainTag     string `json:"domainTag"`
+	HashAlgorithm string `json:"hashAlgorithm"`
+	Nullifier     string `json:"nullifier"`
+	Note          string `json:"note,omitempty"`
 }
 
 func main() {
@@ -90,12 +102,27 @@ func main() {
 		die("STATE-04 mutated root: rootB=%s, after-build=%s", newRoot, postBuildRoot)
 	}
 
+	// STATE-06 — derive the canonical Alice nullifier.
+	// Same composition the circuit (ZK-05) will enforce:
+	// nullifier = H(domain | userSecret | nonce). The MVP uses
+	// SHA-256 as the placeholder hash; when ZK-02 locks the final
+	// scheme we bump the domain tag and re-run this generator.
+	nullifier, err := state.NullifierFor(aliceSecret, wdReq.Nonce)
+	if err != nil {
+		die("nullifier: %v", err)
+	}
+	write("nullifier_wd_1.json", nullifierVector{
+		WithdrawID:    wdReq.WithdrawID,
+		Owner:         aliceAddr,
+		Nonce:         wdReq.Nonce,
+		UserSecret:    aliceSecret,
+		DomainTag:     state.NullifierDomainTag(),
+		HashAlgorithm: "sha256",
+		Nullifier:     nullifier,
+		Note:          "STATE-06 — nullifier(domain | userSecret | nonce). Placeholder hash until ZK-02 locks Poseidon/MiMC; bump domain tag then regenerate.",
+	})
+
 	// STATE-05 — apply the canonical Alice withdrawal (40 uusdc).
-	// The nullifier here is a placeholder following the same composition
-	// STATE-06 will use (`Hash(userSecret, nonce)`), but with a fixed test
-	// secret. Once ZK-02 locks the hash scheme, regenerate this vector and
-	// any downstream consumer (P2 witness, P1 verifier) re-reads it.
-	nullifier := canonicalNullifier("alice_secret", wdReq.Nonce)
 	rootC, err := ls.ApplyWithdrawal(wdReq, nullifier)
 	if err != nil {
 		die("apply withdrawal: %v", err)
@@ -123,20 +150,6 @@ func main() {
 	fmt.Println("withdrawRequest:", wdReq.WithdrawID, "nonce:", wdReq.Nonce)
 	fmt.Println("nullifier (placeholder):", nullifier)
 	fmt.Println("wrote vectors into", outDir)
-}
-
-// canonicalNullifier mirrors the agreed nullifier composition
-// (`Hash(userSecret, nonce)`) using SHA-256 as a placeholder. STATE-06
-// will replace this with whatever circuit-friendly hash ZK-02 locks; the
-// JSON shape ("0x"-prefixed hex) is what consumers depend on, not the
-// digest value itself.
-func canonicalNullifier(userSecret, nonce string) string {
-	h := sha256.New()
-	h.Write([]byte("zkdex/nullifier/v0|"))
-	h.Write([]byte(userSecret))
-	h.Write([]byte("|"))
-	h.Write([]byte(nonce))
-	return "0x" + strings.ToLower(hex.EncodeToString(h.Sum(nil)))
 }
 
 func write(name string, v any) {
