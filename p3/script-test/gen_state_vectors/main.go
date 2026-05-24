@@ -46,6 +46,15 @@ type nullifierVector struct {
 	Note          string `json:"note,omitempty"`
 }
 
+type withdrawAddressHashVector struct {
+	WithdrawID          string `json:"withdrawId"`
+	Destination         string `json:"destination"`
+	DomainTag           string `json:"domainTag"`
+	HashAlgorithm       string `json:"hashAlgorithm"`
+	WithdrawAddressHash string `json:"withdrawAddressHash"`
+	Note                string `json:"note,omitempty"`
+}
+
 func main() {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		die("mkdir: %v", err)
@@ -122,6 +131,24 @@ func main() {
 		Note:          "STATE-06 — nullifier(domain | userSecret | nonce). Placeholder hash until ZK-02 locks Poseidon/MiMC; bump domain tag then regenerate.",
 	})
 
+	// STATE-07 — derive the canonical Alice withdraw-address hash.
+	// Same composition the circuit (ZK-07) will enforce:
+	// withdrawAddressHash = H(domain | canonical(destination)). The MVP
+	// uses SHA-256 as the placeholder hash; when ZK-02 locks the final
+	// scheme we bump the domain tag and re-run this generator.
+	addrHash, err := state.WithdrawAddressHash(wdReq.Destination)
+	if err != nil {
+		die("withdraw address hash: %v", err)
+	}
+	write("withdraw_address_hash_wd_1.json", withdrawAddressHashVector{
+		WithdrawID:          wdReq.WithdrawID,
+		Destination:         wdReq.Destination,
+		DomainTag:           state.WithdrawAddressDomainTag(),
+		HashAlgorithm:       "sha256",
+		WithdrawAddressHash: addrHash,
+		Note:                "STATE-07 — withdrawAddressHash(domain | destination). Placeholder hash until ZK-02 locks Poseidon/MiMC; bump domain tag then regenerate.",
+	})
+
 	// STATE-05 — apply the canonical Alice withdrawal (40 uusdc).
 	rootC, err := ls.ApplyWithdrawal(wdReq, nullifier)
 	if err != nil {
@@ -149,6 +176,7 @@ func main() {
 	fmt.Println("rootC:", rootC)
 	fmt.Println("withdrawRequest:", wdReq.WithdrawID, "nonce:", wdReq.Nonce)
 	fmt.Println("nullifier (placeholder):", nullifier)
+	fmt.Println("withdrawAddressHash (placeholder):", addrHash)
 	fmt.Println("wrote vectors into", outDir)
 }
 
