@@ -4,6 +4,7 @@ import (
 	"context"
 
 	batchbuilder "github.com/zhenjb/ganc-sys/internal/batch"
+	"github.com/zhenjb/ganc-sys/internal/relayer"
 	"github.com/zhenjb/ganc-sys/internal/repository"
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
@@ -12,11 +13,13 @@ import (
 //
 // P4 owns this service as integration glue.
 // P3 owns the actual batch builder implementation behind batch.Builder.
+// P1 owns the actual batch submit implementation behind relayer.Client.
 type BatchService struct {
 	batchRepository    *repository.BatchRepository
 	depositRepository  *repository.DepositRepository
 	withdrawRepository *repository.WithdrawRepository
 	batchBuilder       batchbuilder.Builder
+	relayerClient      relayer.Client
 }
 
 func NewBatchService(
@@ -24,12 +27,14 @@ func NewBatchService(
 	depositRepository *repository.DepositRepository,
 	withdrawRepository *repository.WithdrawRepository,
 	batchBuilder batchbuilder.Builder,
+	relayerClient relayer.Client,
 ) *BatchService {
 	return &BatchService{
 		batchRepository:    batchRepository,
 		depositRepository:  depositRepository,
 		withdrawRepository: withdrawRepository,
 		batchBuilder:       batchBuilder,
+		relayerClient:      relayerClient,
 	}
 }
 
@@ -79,24 +84,33 @@ func (s *BatchService) BuildBatch(ctx context.Context, req types.BuildBatchReque
 	}, nil
 }
 
-func (s *BatchService) SubmitBatch(ctx context.Context, req types.SubmitBatchRequestBody) types.SubmitBatchResponse {
-	// TODO(INT-09 / P1):
-	// Submit MsgSubmitBatchProof to x/zkdex and index resulting events.
-	withdrawRecord := s.withdrawRepository.GetLocalWithdrawRecord(ctx, false)
+func (s *BatchService) SubmitBatch(ctx context.Context, req types.SubmitBatchRequestBody) (types.SubmitBatchResponse, error) {
+	// P4 integration point:
+	// This calls the P1 relayer/chain submit interface.
+	// Today this is wired to relayer.LocalClient.
+	// Later it should submit MsgSubmitBatchProof to x/zkdex.
+	result, err := s.relayerClient.SubmitBatch(ctx, relayer.SubmitBatchInput{
+		SettlementUpdate: req.SettlementUpdate,
+		BatchCommitments: req.BatchCommitments,
+		ProofBundle:      req.ProofBundle,
+	})
+	if err != nil {
+		return types.SubmitBatchResponse{}, err
+	}
 
 	return types.SubmitBatchResponse{
-		TxHash:           "0xmocksubmitbatch",
-		Accepted:         true,
-		ProofStatus:      "accepted",
-		SettlementUpdate: s.batchRepository.GetLocalSettlementUpdate(ctx),
-		BatchCommitments: s.batchRepository.GetLocalBatchCommitments(ctx),
-		WithdrawRecords:  []types.WithdrawRecord{withdrawRecord},
+		TxHash:           result.TxHash,
+		Accepted:         result.Accepted,
+		ProofStatus:      result.ProofStatus,
+		SettlementUpdate: req.SettlementUpdate,
+		BatchCommitments: req.BatchCommitments,
+		WithdrawRecords:  result.WithdrawRecords,
 		State: types.PartialState{
-			CurrentStateRoot: "0xrootB",
+			CurrentStateRoot: req.SettlementUpdate.NewStateRoot,
 			DepositStatus:    "processed",
-			ProofStatus:      "accepted",
+			ProofStatus:      result.ProofStatus,
 			WithdrawStatus:   "readyToClaim",
 			BatchStatus:      "accepted",
 		},
-	}
+	}, nil
 }

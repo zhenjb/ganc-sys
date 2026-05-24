@@ -16,6 +16,7 @@ import (
 //
 // P4 owns the HTTP boundary.
 // P3 owns the builder implementation called by BatchService.
+// P1 owns the relayer/chain submit implementation called by BatchService.
 type BatchHandler struct {
 	batchService *service.BatchService
 }
@@ -69,6 +70,11 @@ func (h *BatchHandler) SubmitBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result := h.batchService.SubmitBatch(r.Context(), req)
+	result, err := h.batchService.SubmitBatch(r.Context(), req)
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	response.JSON(w, http.StatusOK, result)
 }

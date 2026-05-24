@@ -299,30 +299,51 @@ func TestINT02GenerateProofLocalContract(t *testing.T) {
 func TestINT02SubmitBatchLocalContract(t *testing.T) {
 	server := newTestServer()
 
-	req := types.SubmitBatchRequestBody{
-		SettlementUpdate: canonicalSettlementUpdate(),
-		BatchCommitments: canonicalBatchCommitments(),
-		ProofBundle: types.ProofBundle{
-			Proof: "0xmockproof",
-			PublicInputs: []string{
-				"0xrootA",
-				"0xrootB",
-				"0xdepositsRoot",
-				"0xwithdrawalsRoot",
-				"0xnullifiersRoot",
-				"0xwithdrawOutputsRoot",
-			},
-			VerificationKeyID: "v1",
-		},
+	depositResp := createDepositForTest(t, server, "100")
+	withdrawResp := createWithdrawRequestForTest(t, server, "40")
+
+	buildReq := types.BuildBatchRequestBody{
+		DepositIDs:  []string{depositResp.DepositRecord.DepositID},
+		WithdrawIDs: []string{withdrawResp.WithdrawRequest.WithdrawID},
 	}
 
-	rec := performRequest(t, server, http.MethodPost, "/api/batch/submit", req)
+	buildRec := performRequest(t, server, http.MethodPost, "/api/batch/build", buildReq)
+	if buildRec.Code != http.StatusOK {
+		t.Fatalf("expected build batch status 200, got %d, body=%s", buildRec.Code, buildRec.Body.String())
+	}
+
+	buildBody := decodeJSON[types.BuildBatchResponse](t, buildRec)
+
+	proofReq := types.GenerateProofRequestBody{
+		SettlementUpdate: buildBody.SettlementUpdate,
+		BatchCommitments: buildBody.BatchCommitments,
+		Witness:          buildBody.Witness,
+	}
+
+	proofRec := performRequest(t, server, http.MethodPost, "/api/proof/generate", proofReq)
+	if proofRec.Code != http.StatusOK {
+		t.Fatalf("expected proof status 200, got %d, body=%s", proofRec.Code, proofRec.Body.String())
+	}
+
+	proofBody := decodeJSON[types.GenerateProofResponse](t, proofRec)
+
+	submitReq := types.SubmitBatchRequestBody{
+		SettlementUpdate: buildBody.SettlementUpdate,
+		BatchCommitments: buildBody.BatchCommitments,
+		ProofBundle:      proofBody.ProofBundle,
+	}
+
+	rec := performRequest(t, server, http.MethodPost, "/api/batch/submit", submitReq)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d, body=%s", rec.Code, rec.Body.String())
 	}
 
 	body := decodeJSON[types.SubmitBatchResponse](t, rec)
+
+	if body.TxHash == "" {
+		t.Fatalf("expected txHash to be generated")
+	}
 
 	if !body.Accepted {
 		t.Fatalf("expected accepted=true")
@@ -332,24 +353,51 @@ func TestINT02SubmitBatchLocalContract(t *testing.T) {
 		t.Fatalf("expected proofStatus=accepted, got %q", body.ProofStatus)
 	}
 
-	if body.BatchCommitments.DepositsRoot != "0xdepositsRoot" {
-		t.Fatalf("expected depositsRoot=0xdepositsRoot, got %q", body.BatchCommitments.DepositsRoot)
+	if body.SettlementUpdate.BatchID != buildBody.SettlementUpdate.BatchID {
+		t.Fatalf("expected settlement batchId=%q, got %q", buildBody.SettlementUpdate.BatchID, body.SettlementUpdate.BatchID)
+	}
+
+	if body.BatchCommitments.DepositsRoot != buildBody.BatchCommitments.DepositsRoot {
+		t.Fatalf("expected depositsRoot=%q, got %q", buildBody.BatchCommitments.DepositsRoot, body.BatchCommitments.DepositsRoot)
 	}
 
 	if len(body.WithdrawRecords) != 1 {
 		t.Fatalf("expected one withdrawRecord, got %d", len(body.WithdrawRecords))
 	}
 
-	if body.WithdrawRecords[0].WithdrawID != "wd-1" {
-		t.Fatalf("expected withdrawId=wd-1, got %q", body.WithdrawRecords[0].WithdrawID)
+	expectedWithdrawal := buildBody.SettlementUpdate.Withdrawals[0]
+	actualRecord := body.WithdrawRecords[0]
+
+	if actualRecord.WithdrawID != expectedWithdrawal.WithdrawID {
+		t.Fatalf("expected withdrawId=%q, got %q", expectedWithdrawal.WithdrawID, actualRecord.WithdrawID)
 	}
 
-	if body.WithdrawRecords[0].Claimed {
+	if actualRecord.Owner != expectedWithdrawal.Owner {
+		t.Fatalf("expected owner=%q, got %q", expectedWithdrawal.Owner, actualRecord.Owner)
+	}
+
+	if actualRecord.Denom != expectedWithdrawal.Denom {
+		t.Fatalf("expected denom=%q, got %q", expectedWithdrawal.Denom, actualRecord.Denom)
+	}
+
+	if actualRecord.Amount != expectedWithdrawal.Amount {
+		t.Fatalf("expected amount=%q, got %q", expectedWithdrawal.Amount, actualRecord.Amount)
+	}
+
+	if actualRecord.Destination != expectedWithdrawal.Destination {
+		t.Fatalf("expected destination=%q, got %q", expectedWithdrawal.Destination, actualRecord.Destination)
+	}
+
+	if actualRecord.Nullifier != expectedWithdrawal.Nullifier {
+		t.Fatalf("expected nullifier=%q, got %q", expectedWithdrawal.Nullifier, actualRecord.Nullifier)
+	}
+
+	if actualRecord.Claimed {
 		t.Fatalf("expected withdrawRecords[0].claimed=false after submit batch")
 	}
 
-	if body.State.CurrentStateRoot != "0xrootB" {
-		t.Fatalf("expected currentStateRoot=0xrootB, got %q", body.State.CurrentStateRoot)
+	if body.State.CurrentStateRoot != buildBody.SettlementUpdate.NewStateRoot {
+		t.Fatalf("expected currentStateRoot=%q, got %q", buildBody.SettlementUpdate.NewStateRoot, body.State.CurrentStateRoot)
 	}
 
 	if body.State.DepositStatus != "processed" {

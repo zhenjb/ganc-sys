@@ -11,6 +11,7 @@ import (
 	"github.com/zhenjb/ganc-sys/internal/handler"
 	"github.com/zhenjb/ganc-sys/internal/indexer"
 	"github.com/zhenjb/ganc-sys/internal/prover"
+	"github.com/zhenjb/ganc-sys/internal/relayer"
 	"github.com/zhenjb/ganc-sys/internal/repository"
 	"github.com/zhenjb/ganc-sys/internal/service"
 	"github.com/zhenjb/ganc-sys/internal/store"
@@ -42,7 +43,14 @@ func main() {
 
 	batchRepository := repository.NewBatchRepository()
 	batchBuilder := batch.NewLocalBuilder()
-	batchService := service.NewBatchService(batchRepository, depositRepository, withdrawRepository, batchBuilder)
+	relayerClient := relayer.NewLocalClient()
+	batchService := service.NewBatchService(
+		batchRepository,
+		depositRepository,
+		withdrawRepository,
+		batchBuilder,
+		relayerClient,
+	)
 	batchHandler := handler.NewBatchHandler(batchService)
 
 	proverClient := prover.NewLocalClient()
