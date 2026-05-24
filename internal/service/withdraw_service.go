@@ -9,18 +9,16 @@ import (
 
 // WithdrawService owns withdrawal request and claim use cases.
 //
-// INT-04 status:
-// - CreateWithdrawRequest returns a local deterministic request.
-// - ClaimWithdraw returns a local deterministic claimed record.
-// - No persisted withdrawal request store exists yet.
-// - No MsgClaimWithdraw chain integration exists yet.
+// INT-06 status:
+// - CreateWithdrawRequest creates a real local request from input.
+// - The request is saved in MemoryStore.
+// - P3/P5 can query saved requests.
 //
-// TODO(INT-06):
-// Create and persist real withdrawal requests from user input.
-//
-// TODO(INT-10 / P1):
-// Claim withdrawal by submitting MsgClaimWithdraw to the chain,
-// then query/index final withdrawal record and balances.
+// Still local/stubbed:
+// - signature is local deterministic placeholder.
+// - off-chain balance debit is not implemented here.
+// - nullifier/withdraw output generation belongs to batch building.
+// - claim withdraw is still local fixture until MsgClaimWithdraw integration.
 type WithdrawService struct {
 	withdrawRepository *repository.WithdrawRepository
 }
@@ -32,10 +30,7 @@ func NewWithdrawService(withdrawRepository *repository.WithdrawRepository) *With
 }
 
 func (s *WithdrawService) CreateWithdrawRequest(ctx context.Context, req types.WithdrawRequestBody) types.WithdrawRequestResponse {
-	// TODO(INT-06):
-	// Use req.Owner, req.Denom, req.Amount, req.Destination to create a real
-	// withdraw request with nonce/signature and persist it.
-	withdrawReq := s.withdrawRepository.GetLocalWithdrawRequest(ctx)
+	withdrawReq := s.withdrawRepository.CreateWithdrawRequest(ctx, req)
 
 	return types.WithdrawRequestResponse{
 		WithdrawRequest: withdrawReq,
@@ -43,6 +38,23 @@ func (s *WithdrawService) CreateWithdrawRequest(ctx context.Context, req types.W
 			WithdrawStatus: "requested",
 		},
 	}
+}
+
+func (s *WithdrawService) ListWithdrawRequests(ctx context.Context) types.ListWithdrawRequestsResponse {
+	return types.ListWithdrawRequestsResponse{
+		WithdrawRequests: s.withdrawRepository.ListWithdrawRequests(ctx),
+	}
+}
+
+func (s *WithdrawService) GetWithdrawRequest(ctx context.Context, withdrawID string) (types.GetWithdrawRequestResponse, error) {
+	request, err := s.withdrawRepository.GetWithdrawRequest(ctx, withdrawID)
+	if err != nil {
+		return types.GetWithdrawRequestResponse{}, err
+	}
+
+	return types.GetWithdrawRequestResponse{
+		WithdrawRequest: request,
+	}, nil
 }
 
 func (s *WithdrawService) ClaimWithdraw(ctx context.Context, req types.ClaimWithdrawRequestBody) types.ClaimWithdrawResponse {

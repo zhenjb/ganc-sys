@@ -47,6 +47,8 @@ func (r *Router) Routes() http.Handler {
 	mux.HandleFunc("GET /api/deposits/{depositId}", r.depositHandler.GetDeposit)
 
 	mux.HandleFunc("POST /api/withdraw-request", r.withdrawHandler.CreateWithdrawRequest)
+	mux.HandleFunc("GET /api/withdraw-requests", r.withdrawHandler.ListWithdrawRequests)
+	mux.HandleFunc("GET /api/withdraw-requests/{withdrawId}", r.withdrawHandler.GetWithdrawRequest)
 	mux.HandleFunc("POST /api/withdraw/claim", r.withdrawHandler.ClaimWithdraw)
 
 	mux.HandleFunc("POST /api/batch/build", r.batchHandler.BuildBatch)

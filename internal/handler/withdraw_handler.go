@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
+	"github.com/zhenjb/ganc-sys/internal/repository"
 	"github.com/zhenjb/ganc-sys/internal/request"
 	"github.com/zhenjb/ganc-sys/internal/response"
 	"github.com/zhenjb/ganc-sys/internal/service"
@@ -11,17 +13,15 @@ import (
 
 // WithdrawHandler exposes withdrawal request and claim endpoints.
 //
-// INT-04 status:
-// - POST /api/withdraw-request returns a local deterministic request.
-// - POST /api/withdraw/claim returns a local deterministic claimed result.
-// - No persisted withdrawal request store exists yet.
-// - No real MsgClaimWithdraw integration exists yet.
+// INT-06 status:
+// - POST /api/withdraw-request creates and persists a local withdraw request.
+// - GET /api/withdraw-requests lists persisted withdraw requests.
+// - GET /api/withdraw-requests/{withdrawId} returns one persisted request.
 //
-// TODO(INT-06):
-// Persist user-created withdrawal requests.
-//
-// TODO(INT-10):
-// Submit MsgClaimWithdraw to chain and return indexed/query-backed results.
+// Still local/stubbed:
+// - no real balance debit yet.
+// - no real nullifier generation here.
+// - claim withdraw is still local fixture until INT-10.
 type WithdrawHandler struct {
 	withdrawService *service.WithdrawService
 }
@@ -44,6 +44,33 @@ func (h *WithdrawHandler) CreateWithdrawRequest(w http.ResponseWriter, r *http.R
 	}
 
 	result := h.withdrawService.CreateWithdrawRequest(r.Context(), req)
+	response.JSON(w, http.StatusOK, result)
+}
+
+func (h *WithdrawHandler) ListWithdrawRequests(w http.ResponseWriter, r *http.Request) {
+	result := h.withdrawService.ListWithdrawRequests(r.Context())
+
+	response.JSON(w, http.StatusOK, result)
+}
+
+func (h *WithdrawHandler) GetWithdrawRequest(w http.ResponseWriter, r *http.Request) {
+	withdrawID := r.PathValue("withdrawId")
+	if withdrawID == "" {
+		response.Error(w, http.StatusBadRequest, "withdrawId is required")
+		return
+	}
+
+	result, err := h.withdrawService.GetWithdrawRequest(r.Context(), withdrawID)
+	if err != nil {
+		if errors.Is(err, repository.ErrWithdrawRequestNotFound) {
+			response.Error(w, http.StatusNotFound, "withdraw request not found")
+			return
+		}
+
+		response.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
 	response.JSON(w, http.StatusOK, result)
 }
 

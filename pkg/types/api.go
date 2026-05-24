@@ -81,3 +81,11 @@ type ListDepositsResponse struct {
 type GetDepositResponse struct {
 	DepositRecord DepositRecord `json:"depositRecord"`
 }
+
+type ListWithdrawRequestsResponse struct {
+	WithdrawRequests []WithdrawRequest `json:"withdrawRequests"`
+}
+
+type GetWithdrawRequestResponse struct {
+	WithdrawRequest WithdrawRequest `json:"withdrawRequest"`
+}

@@ -34,7 +34,7 @@ func main() {
 	depositService := service.NewDepositService(depositRepository, depositIndexer, chainClient)
 	depositHandler := handler.NewDepositHandler(depositService)
 
-	withdrawRepository := repository.NewWithdrawRepository()
+	withdrawRepository := repository.NewWithdrawRepository(memoryStore)
 	withdrawService := service.NewWithdrawService(withdrawRepository)
 	withdrawHandler := handler.NewWithdrawHandler(withdrawService)
 
