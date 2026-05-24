@@ -1,28 +1,21 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
+	batchbuilder "github.com/zhenjb/ganc-sys/internal/batch"
+	"github.com/zhenjb/ganc-sys/internal/repository"
 	"github.com/zhenjb/ganc-sys/internal/request"
 	"github.com/zhenjb/ganc-sys/internal/response"
 	"github.com/zhenjb/ganc-sys/internal/service"
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
 
-// BatchHandler exposes batch build and batch submit endpoints.
+// BatchHandler exposes batch build and submit endpoints.
 //
-// INT-04 status:
-// - POST /api/batch/build returns local deterministic batch-shaped data.
-// - POST /api/batch/submit returns local deterministic accepted result.
-// - P3 batch builder is not connected yet.
-// - P1 MsgSubmitBatchProof is not connected yet.
-//
-// TODO(INT-07):
-// BuildBatch should call P3 batch builder with depositIds[] and withdrawIds[].
-//
-// TODO(INT-09):
-// SubmitBatch should submit MsgSubmitBatchProof to x/zkdex and index the emitted
-// batch/withdrawal events.
+// P4 owns the HTTP boundary.
+// P3 owns the builder implementation called by BatchService.
 type BatchHandler struct {
 	batchService *service.BatchService
 }
@@ -44,7 +37,22 @@ func (h *BatchHandler) BuildBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result := h.batchService.BuildBatch(r.Context(), req)
+	result, err := h.batchService.BuildBatch(r.Context(), req)
+	if err != nil {
+		switch {
+		case errors.Is(err, repository.ErrDepositNotFound):
+			response.Error(w, http.StatusNotFound, "deposit not found")
+		case errors.Is(err, repository.ErrWithdrawRequestNotFound):
+			response.Error(w, http.StatusNotFound, "withdraw request not found")
+		case errors.Is(err, batchbuilder.ErrInsufficientOffchainBalance):
+			response.Error(w, http.StatusBadRequest, "insufficient off-chain balance")
+		default:
+			response.Error(w, http.StatusInternalServerError, err.Error())
+		}
+
+		return
+	}
+
 	response.JSON(w, http.StatusOK, result)
 }
 

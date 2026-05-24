@@ -113,9 +113,12 @@ func TestINT02WithdrawRequestLocalContract(t *testing.T) {
 func TestINT02BuildBatchLocalContract(t *testing.T) {
 	server := newTestServer()
 
+	depositResp := createDepositForTest(t, server, "100")
+	withdrawResp := createWithdrawRequestForTest(t, server, "40")
+
 	req := types.BuildBatchRequestBody{
-		DepositIDs:  []string{"dep-1"},
-		WithdrawIDs: []string{"wd-1"},
+		DepositIDs:  []string{depositResp.DepositRecord.DepositID},
+		WithdrawIDs: []string{withdrawResp.WithdrawRequest.WithdrawID},
 	}
 
 	rec := performRequest(t, server, http.MethodPost, "/api/batch/build", req)
@@ -126,24 +129,24 @@ func TestINT02BuildBatchLocalContract(t *testing.T) {
 
 	body := decodeJSON[types.BuildBatchResponse](t, rec)
 
-	if body.SettlementUpdate.BatchID != "batch-1" {
-		t.Fatalf("expected batchId=batch-1, got %q", body.SettlementUpdate.BatchID)
+	if body.SettlementUpdate.BatchID == "" {
+		t.Fatalf("expected batchId to be generated")
 	}
 
 	if body.SettlementUpdate.OldStateRoot != "0xrootA" {
 		t.Fatalf("expected oldStateRoot=0xrootA, got %q", body.SettlementUpdate.OldStateRoot)
 	}
 
-	if body.SettlementUpdate.NewStateRoot != "0xrootB" {
-		t.Fatalf("expected newStateRoot=0xrootB, got %q", body.SettlementUpdate.NewStateRoot)
+	if body.SettlementUpdate.NewStateRoot == "" {
+		t.Fatalf("expected newStateRoot to be generated")
 	}
 
 	if len(body.SettlementUpdate.Deposits) != 1 {
 		t.Fatalf("expected one deposit in local batch, got %d", len(body.SettlementUpdate.Deposits))
 	}
 
-	if body.SettlementUpdate.Deposits[0].DepositID != "dep-1" {
-		t.Fatalf("expected depositId=dep-1, got %q", body.SettlementUpdate.Deposits[0].DepositID)
+	if body.SettlementUpdate.Deposits[0].DepositID != depositResp.DepositRecord.DepositID {
+		t.Fatalf("expected depositId=%q, got %q", depositResp.DepositRecord.DepositID, body.SettlementUpdate.Deposits[0].DepositID)
 	}
 
 	if body.SettlementUpdate.Deposits[0].Owner != "cosmos1alice" {
@@ -158,32 +161,56 @@ func TestINT02BuildBatchLocalContract(t *testing.T) {
 		t.Fatalf("expected one withdrawal in local batch, got %d", len(body.SettlementUpdate.Withdrawals))
 	}
 
-	if body.SettlementUpdate.Withdrawals[0].WithdrawID != "wd-1" {
-		t.Fatalf("expected withdrawId=wd-1, got %q", body.SettlementUpdate.Withdrawals[0].WithdrawID)
+	if body.SettlementUpdate.Withdrawals[0].WithdrawID != withdrawResp.WithdrawRequest.WithdrawID {
+		t.Fatalf("expected withdrawId=%q, got %q", withdrawResp.WithdrawRequest.WithdrawID, body.SettlementUpdate.Withdrawals[0].WithdrawID)
 	}
 
-	if body.SettlementUpdate.Withdrawals[0].DestinationHash != "0xmockdestinationhash" {
-		t.Fatalf("expected destinationHash=0xmockdestinationhash, got %q", body.SettlementUpdate.Withdrawals[0].DestinationHash)
+	if body.SettlementUpdate.Withdrawals[0].DestinationHash == "" {
+		t.Fatalf("expected destinationHash to be generated")
 	}
 
-	if body.SettlementUpdate.Withdrawals[0].Nullifier != "0xmocknullifier" {
-		t.Fatalf("expected nullifier=0xmocknullifier, got %q", body.SettlementUpdate.Withdrawals[0].Nullifier)
+	if body.SettlementUpdate.Withdrawals[0].DestinationHash == "0xmockdestinationhash" {
+		t.Fatalf("expected computed destinationHash, got placeholder")
 	}
 
-	if body.BatchCommitments.DepositsRoot != "0xdepositsRoot" {
-		t.Fatalf("expected depositsRoot=0xdepositsRoot, got %q", body.BatchCommitments.DepositsRoot)
+	if body.SettlementUpdate.Withdrawals[0].Nullifier == "" {
+		t.Fatalf("expected nullifier to be generated")
 	}
 
-	if body.BatchCommitments.WithdrawalsRoot != "0xwithdrawalsRoot" {
-		t.Fatalf("expected withdrawalsRoot=0xwithdrawalsRoot, got %q", body.BatchCommitments.WithdrawalsRoot)
+	if body.SettlementUpdate.Withdrawals[0].Nullifier == "0xmocknullifier" {
+		t.Fatalf("expected computed nullifier, got placeholder")
 	}
 
-	if body.BatchCommitments.NullifiersRoot != "0xnullifiersRoot" {
-		t.Fatalf("expected nullifiersRoot=0xnullifiersRoot, got %q", body.BatchCommitments.NullifiersRoot)
+	if body.BatchCommitments.DepositsRoot == "" {
+		t.Fatalf("expected depositsRoot to be generated")
 	}
 
-	if body.BatchCommitments.WithdrawOutputsRoot != "0xwithdrawOutputsRoot" {
-		t.Fatalf("expected withdrawOutputsRoot=0xwithdrawOutputsRoot, got %q", body.BatchCommitments.WithdrawOutputsRoot)
+	if body.BatchCommitments.DepositsRoot == "0xdepositsRoot" {
+		t.Fatalf("expected computed depositsRoot, got placeholder")
+	}
+
+	if body.BatchCommitments.WithdrawalsRoot == "" {
+		t.Fatalf("expected withdrawalsRoot to be generated")
+	}
+
+	if body.BatchCommitments.WithdrawalsRoot == "0xwithdrawalsRoot" {
+		t.Fatalf("expected computed withdrawalsRoot, got placeholder")
+	}
+
+	if body.BatchCommitments.NullifiersRoot == "" {
+		t.Fatalf("expected nullifiersRoot to be generated")
+	}
+
+	if body.BatchCommitments.NullifiersRoot == "0xnullifiersRoot" {
+		t.Fatalf("expected computed nullifiersRoot, got placeholder")
+	}
+
+	if body.BatchCommitments.WithdrawOutputsRoot == "" {
+		t.Fatalf("expected withdrawOutputsRoot to be generated")
+	}
+
+	if body.BatchCommitments.WithdrawOutputsRoot == "0xwithdrawOutputsRoot" {
+		t.Fatalf("expected computed withdrawOutputsRoot, got placeholder")
 	}
 
 	if len(body.Witness.Accounts) != 1 {

@@ -3,64 +3,85 @@ package service
 import (
 	"context"
 
+	batchbuilder "github.com/zhenjb/ganc-sys/internal/batch"
 	"github.com/zhenjb/ganc-sys/internal/repository"
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
 
-// BatchService owns batch build and batch submit use cases.
+// BatchService owns batch endpoint orchestration.
 //
-// INT-04 status:
-// - BuildBatch returns local deterministic batch-shaped data.
-// - SubmitBatch returns local deterministic accepted result.
-// - P3 batch builder is not connected yet.
-// - P1 MsgSubmitBatchProof is not connected yet.
-//
-// TODO(INT-07 / P3):
-// BuildBatch should call P3 batch builder using:
-// - req.DepositIDs,
-// - req.WithdrawIDs,
-// - indexed deposit records,
-// - persisted withdrawal requests.
-//
-// TODO(INT-09 / P1):
-// SubmitBatch should submit MsgSubmitBatchProof(
-// settlementUpdate,
-// batchCommitments,
-// proofBundle,
-// ) to x/zkdex and index resulting withdrawRecords[].
+// P4 owns this service as integration glue.
+// P3 owns the actual batch builder implementation behind batch.Builder.
 type BatchService struct {
 	batchRepository    *repository.BatchRepository
+	depositRepository  *repository.DepositRepository
 	withdrawRepository *repository.WithdrawRepository
+	batchBuilder       batchbuilder.Builder
 }
 
 func NewBatchService(
 	batchRepository *repository.BatchRepository,
+	depositRepository *repository.DepositRepository,
 	withdrawRepository *repository.WithdrawRepository,
+	batchBuilder batchbuilder.Builder,
 ) *BatchService {
 	return &BatchService{
 		batchRepository:    batchRepository,
+		depositRepository:  depositRepository,
 		withdrawRepository: withdrawRepository,
+		batchBuilder:       batchBuilder,
 	}
 }
 
-func (s *BatchService) BuildBatch(ctx context.Context, req types.BuildBatchRequestBody) types.BuildBatchResponse {
-	// TODO(INT-07):
-	// Replace local fixture with real P3 batch builder output.
+func (s *BatchService) BuildBatch(ctx context.Context, req types.BuildBatchRequestBody) (types.BuildBatchResponse, error) {
+	deposits := make([]types.DepositRecord, 0, len(req.DepositIDs))
+	for _, depositID := range req.DepositIDs {
+		deposit, err := s.depositRepository.GetDeposit(ctx, depositID)
+		if err != nil {
+			return types.BuildBatchResponse{}, err
+		}
+
+		deposits = append(deposits, deposit)
+	}
+
+	withdrawRequests := make([]types.WithdrawRequest, 0, len(req.WithdrawIDs))
+	for _, withdrawID := range req.WithdrawIDs {
+		withdrawReq, err := s.withdrawRepository.GetWithdrawRequest(ctx, withdrawID)
+		if err != nil {
+			return types.BuildBatchResponse{}, err
+		}
+
+		withdrawRequests = append(withdrawRequests, withdrawReq)
+	}
+
+	// P4 integration point:
+	// This calls the P3 batch builder interface.
+	// Today this is wired to batch.LocalBuilder.
+	// Later it should be replaced with P3's real implementation.
+	output, err := s.batchBuilder.Build(ctx, batchbuilder.BuildInput{
+		OldStateRoot:     "0xrootA",
+		Deposits:         deposits,
+		WithdrawRequests: withdrawRequests,
+	})
+	if err != nil {
+		return types.BuildBatchResponse{}, err
+	}
+
 	return types.BuildBatchResponse{
-		SettlementUpdate: s.batchRepository.GetLocalSettlementUpdate(ctx),
-		BatchCommitments: s.batchRepository.GetLocalBatchCommitments(ctx),
-		Witness:          s.batchRepository.GetLocalWitness(ctx),
+		SettlementUpdate: output.SettlementUpdate,
+		BatchCommitments: output.BatchCommitments,
+		Witness:          output.Witness,
 		State: types.PartialState{
 			BatchStatus:    "built",
 			ProofStatus:    "idle",
 			WithdrawStatus: "batchBuilt",
 		},
-	}
+	}, nil
 }
 
 func (s *BatchService) SubmitBatch(ctx context.Context, req types.SubmitBatchRequestBody) types.SubmitBatchResponse {
-	// TODO(INT-09):
-	// Submit to chain and build withdrawRecords[] from chain events/query.
+	// TODO(INT-09 / P1):
+	// Submit MsgSubmitBatchProof to x/zkdex and index resulting events.
 	withdrawRecord := s.withdrawRepository.GetLocalWithdrawRecord(ctx, false)
 
 	return types.SubmitBatchResponse{

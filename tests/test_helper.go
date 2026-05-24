@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/zhenjb/ganc-sys/internal/api"
+	"github.com/zhenjb/ganc-sys/internal/batch"
 	"github.com/zhenjb/ganc-sys/internal/chain"
 	"github.com/zhenjb/ganc-sys/internal/handler"
 	"github.com/zhenjb/ganc-sys/internal/indexer"
@@ -39,7 +40,8 @@ func newTestServer() http.Handler {
 	withdrawHandler := handler.NewWithdrawHandler(withdrawService)
 
 	batchRepository := repository.NewBatchRepository()
-	batchService := service.NewBatchService(batchRepository, withdrawRepository)
+	batchBuilder := batch.NewLocalBuilder()
+	batchService := service.NewBatchService(batchRepository, depositRepository, withdrawRepository, batchBuilder)
 	batchHandler := handler.NewBatchHandler(batchService)
 
 	proofRepository := repository.NewProofRepository()
