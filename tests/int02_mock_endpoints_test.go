@@ -255,36 +255,40 @@ func TestINT02GenerateProofLocalContract(t *testing.T) {
 
 	body := decodeJSON[types.GenerateProofResponse](t, rec)
 
-	if body.ProofBundle.Proof != "0xmockproof" {
-		t.Fatalf("expected proof=0xmockproof, got %q", body.ProofBundle.Proof)
+	if body.ProofBundle.Proof == "" {
+		t.Fatalf("expected proof to be generated")
+	}
+
+	if body.ProofBundle.Proof == "0xmockproof" {
+		t.Fatalf("expected local prover generated proof, got old fixture")
+	}
+
+	if body.ProofBundle.VerificationKeyID != "local-v1" {
+		t.Fatalf("expected verificationKeyId=local-v1, got %q", body.ProofBundle.VerificationKeyID)
 	}
 
 	if len(body.ProofBundle.PublicInputs) != 6 {
 		t.Fatalf("expected 6 public inputs, got %d", len(body.ProofBundle.PublicInputs))
 	}
 
-	if body.ProofBundle.PublicInputs[0] != "0xrootA" {
-		t.Fatalf("expected publicInputs[0]=oldStateRoot, got %q", body.ProofBundle.PublicInputs[0])
+	expectedPublicInputs := []string{
+		req.SettlementUpdate.OldStateRoot,
+		req.SettlementUpdate.NewStateRoot,
+		req.BatchCommitments.DepositsRoot,
+		req.BatchCommitments.WithdrawalsRoot,
+		req.BatchCommitments.NullifiersRoot,
+		req.BatchCommitments.WithdrawOutputsRoot,
 	}
 
-	if body.ProofBundle.PublicInputs[1] != "0xrootB" {
-		t.Fatalf("expected publicInputs[1]=newStateRoot, got %q", body.ProofBundle.PublicInputs[1])
-	}
-
-	if body.ProofBundle.PublicInputs[2] != "0xdepositsRoot" {
-		t.Fatalf("expected publicInputs[2]=depositsRoot, got %q", body.ProofBundle.PublicInputs[2])
-	}
-
-	if body.ProofBundle.PublicInputs[3] != "0xwithdrawalsRoot" {
-		t.Fatalf("expected publicInputs[3]=withdrawalsRoot, got %q", body.ProofBundle.PublicInputs[3])
-	}
-
-	if body.ProofBundle.PublicInputs[4] != "0xnullifiersRoot" {
-		t.Fatalf("expected publicInputs[4]=nullifiersRoot, got %q", body.ProofBundle.PublicInputs[4])
-	}
-
-	if body.ProofBundle.PublicInputs[5] != "0xwithdrawOutputsRoot" {
-		t.Fatalf("expected publicInputs[5]=withdrawOutputsRoot, got %q", body.ProofBundle.PublicInputs[5])
+	for i := range expectedPublicInputs {
+		if body.ProofBundle.PublicInputs[i] != expectedPublicInputs[i] {
+			t.Fatalf(
+				"expected publicInputs[%d]=%q, got %q",
+				i,
+				expectedPublicInputs[i],
+				body.ProofBundle.PublicInputs[i],
+			)
+		}
 	}
 
 	if body.State.ProofStatus != "ready" {

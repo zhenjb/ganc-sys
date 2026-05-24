@@ -12,6 +12,7 @@ import (
 	"github.com/zhenjb/ganc-sys/internal/chain"
 	"github.com/zhenjb/ganc-sys/internal/handler"
 	"github.com/zhenjb/ganc-sys/internal/indexer"
+	"github.com/zhenjb/ganc-sys/internal/prover"
 	"github.com/zhenjb/ganc-sys/internal/repository"
 	"github.com/zhenjb/ganc-sys/internal/service"
 	"github.com/zhenjb/ganc-sys/internal/store"
@@ -44,8 +45,8 @@ func newTestServer() http.Handler {
 	batchService := service.NewBatchService(batchRepository, depositRepository, withdrawRepository, batchBuilder)
 	batchHandler := handler.NewBatchHandler(batchService)
 
-	proofRepository := repository.NewProofRepository()
-	proofService := service.NewProofService(proofRepository)
+	proverClient := prover.NewLocalClient()
+	proofService := service.NewProofService(proverClient)
 	proofHandler := handler.NewProofHandler(proofService)
 
 	router := api.NewRouter(api.RouterDeps{

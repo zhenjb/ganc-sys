@@ -3,49 +3,42 @@ package service
 import (
 	"context"
 
-	"github.com/zhenjb/ganc-sys/internal/repository"
+	"github.com/zhenjb/ganc-sys/internal/prover"
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
 
-// ProofService owns proof generation use cases.
+// ProofService owns proof generation orchestration.
 //
-// INT-04 status:
-// - Returns local deterministic ProofBundle.
-// - P2 prover is not connected yet.
-// - No real ZK proof is generated yet.
-//
-// TODO(INT-08 / P2):
-// Replace ProofRepository fixture with a real prover client call.
-// The prover input must include:
-// - SettlementUpdate,
-// - BatchCommitments,
-// - Witness.
-//
-// Public input order is locked:
-// 0 oldStateRoot
-// 1 newStateRoot
-// 2 depositsRoot
-// 3 withdrawalsRoot
-// 4 nullifiersRoot
-// 5 withdrawOutputsRoot
+// P4 owns this service as integration glue.
+// P2 owns the actual prover implementation behind prover.Client.
 type ProofService struct {
-	proofRepository *repository.ProofRepository
+	proverClient prover.Client
 }
 
-func NewProofService(proofRepository *repository.ProofRepository) *ProofService {
+func NewProofService(proverClient prover.Client) *ProofService {
 	return &ProofService{
-		proofRepository: proofRepository,
+		proverClient: proverClient,
 	}
 }
 
-func (s *ProofService) GenerateProof(ctx context.Context, req types.GenerateProofRequestBody) types.GenerateProofResponse {
-	// TODO(INT-08):
-	// Validate req.SettlementUpdate + req.BatchCommitments + req.Witness,
-	// then call the real prover.
+func (s *ProofService) GenerateProof(ctx context.Context, req types.GenerateProofRequestBody) (types.GenerateProofResponse, error) {
+	// P4 integration point:
+	// This calls the P2 prover interface.
+	// Today this is wired to prover.LocalClient.
+	// Later it should be replaced with P2's real prover implementation.
+	proofBundle, err := s.proverClient.GenerateProof(ctx, prover.GenerateProofInput{
+		SettlementUpdate: req.SettlementUpdate,
+		BatchCommitments: req.BatchCommitments,
+		Witness:          req.Witness,
+	})
+	if err != nil {
+		return types.GenerateProofResponse{}, err
+	}
+
 	return types.GenerateProofResponse{
-		ProofBundle: s.proofRepository.GetLocalProofBundle(ctx),
+		ProofBundle: proofBundle,
 		State: types.PartialState{
 			ProofStatus: "ready",
 		},
-	}
+	}, nil
 }

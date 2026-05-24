@@ -11,13 +11,8 @@ import (
 
 // ProofHandler exposes proof generation endpoints.
 //
-// INT-04 status:
-// - POST /api/proof/generate returns a local deterministic ProofBundle.
-// - P2 prover is not connected yet.
-// - No real ZK proof is generated here yet.
-//
-// TODO(INT-08):
-// Call the real prover with SettlementUpdate + BatchCommitments + Witness.
+// P4 owns the HTTP boundary.
+// P2 owns the prover implementation called by ProofService.
 type ProofHandler struct {
 	proofService *service.ProofService
 }
@@ -44,6 +39,16 @@ func (h *ProofHandler) GenerateProof(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result := h.proofService.GenerateProof(r.Context(), req)
+	if len(req.Witness.Accounts) == 0 {
+		response.Error(w, http.StatusBadRequest, "witness.accounts is required")
+		return
+	}
+
+	result, err := h.proofService.GenerateProof(r.Context(), req)
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	response.JSON(w, http.StatusOK, result)
 }
