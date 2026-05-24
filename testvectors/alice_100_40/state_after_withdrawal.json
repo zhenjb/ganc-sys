@@ -1,0 +1,12 @@
+{
+  "root": "0x44d60f77db879799be6212c46d198243cbe2fe2969901ca3663dfb204276250c",
+  "accounts": [
+    {
+      "owner": "cosmos1alice",
+      "denom": "uusdc",
+      "balance": "60",
+      "nonce": "1"
+    }
+  ],
+  "note": "STATE-05 — after applying wd-1, Alice balance=60, nonce=1. rootC. Nullifier is a placeholder until STATE-06/ZK-02 locks the hash scheme."
+}

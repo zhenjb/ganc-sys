@@ -91,6 +91,56 @@ func (s *AccountState) Credit(owner, denom, amount string) (types.Account, error
 	return acc, nil
 }
 
+// Debit subtracts amount from the account balance and increments the
+// account nonce, atomically.
+//
+// Used by STATE-05 ApplyWithdrawal. Returns ErrInsufficientBalance when
+// the on-record balance is strictly less than amount; callers are expected
+// to have already checked, but this guard makes the primitive safe to call
+// without the LocalState mutex held (defense in depth).
+//
+// The nonce is incremented unconditionally on success; for a (owner, denom)
+// pair, every successful Debit moves Account.Nonce by exactly +1. The new
+// nonce equals the request.Nonce previously assigned by STATE-04
+// (Account.Nonce + 1 at request-build time).
+func (s *AccountState) Debit(owner, denom, amount string) (types.Account, error) {
+	key, err := newAccountKey(owner, denom)
+	if err != nil {
+		return types.Account{}, err
+	}
+	delta, err := parsePositiveAmount(amount)
+	if err != nil {
+		return types.Account{}, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	acc, ok := s.accounts[key]
+	if !ok {
+		acc = types.Account{Owner: key.Owner, Denom: key.Denom, Balance: "0", Nonce: "0"}
+	}
+	bal, err := parseNonNegativeAmount(acc.Balance)
+	if err != nil {
+		return types.Account{}, fmt.Errorf("corrupt balance for %s/%s: %w", key.Owner, key.Denom, err)
+	}
+	if bal.Cmp(delta) < 0 {
+		return types.Account{}, fmt.Errorf("%w: have %s, want %s", ErrInsufficientBalance, bal.String(), delta.String())
+	}
+	bal.Sub(bal, delta)
+	acc.Balance = bal.String()
+
+	nonce, err := parseNonNegativeAmount(acc.Nonce)
+	if err != nil {
+		return types.Account{}, fmt.Errorf("corrupt nonce for %s/%s: %w", key.Owner, key.Denom, err)
+	}
+	nonce.Add(nonce, big.NewInt(1))
+	acc.Nonce = nonce.String()
+
+	s.accounts[key] = acc
+	return acc, nil
+}
+
 func (s *AccountState) Snapshot() []types.Account {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

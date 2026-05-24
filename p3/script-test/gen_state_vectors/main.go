@@ -90,10 +90,53 @@ func main() {
 		die("STATE-04 mutated root: rootB=%s, after-build=%s", newRoot, postBuildRoot)
 	}
 
+	// STATE-05 — apply the canonical Alice withdrawal (40 uusdc).
+	// The nullifier here is a placeholder following the same composition
+	// STATE-06 will use (`Hash(userSecret, nonce)`), but with a fixed test
+	// secret. Once ZK-02 locks the hash scheme, regenerate this vector and
+	// any downstream consumer (P2 witness, P1 verifier) re-reads it.
+	nullifier := canonicalNullifier("alice_secret", wdReq.Nonce)
+	rootC, err := ls.ApplyWithdrawal(wdReq, nullifier)
+	if err != nil {
+		die("apply withdrawal: %v", err)
+	}
+	afterWithdraw := stateSnapshot{
+		Root:     rootC,
+		Accounts: ls.Snapshot(),
+		Note:     "STATE-05 — after applying wd-1, Alice balance=60, nonce=1. rootC. Nullifier is a placeholder until STATE-06/ZK-02 locks the hash scheme.",
+	}
+	write("state_after_withdrawal.json", afterWithdraw)
+
+	// Sanity: post-condition required by the STATE-04 changenote — after
+	// STATE-05, account.Nonce must equal request.Nonce.
+	acc := ls.Account(aliceAddr, denom)
+	if acc.Nonce != wdReq.Nonce {
+		die("post-STATE-05 invariant violated: account.Nonce=%s, request.Nonce=%s", acc.Nonce, wdReq.Nonce)
+	}
+	if acc.Balance != "60" {
+		die("post-STATE-05 balance: want 60, got %s", acc.Balance)
+	}
+
 	fmt.Println("rootA:", initial.Root)
 	fmt.Println("rootB:", newRoot)
+	fmt.Println("rootC:", rootC)
 	fmt.Println("withdrawRequest:", wdReq.WithdrawID, "nonce:", wdReq.Nonce)
+	fmt.Println("nullifier (placeholder):", nullifier)
 	fmt.Println("wrote vectors into", outDir)
+}
+
+// canonicalNullifier mirrors the agreed nullifier composition
+// (`Hash(userSecret, nonce)`) using SHA-256 as a placeholder. STATE-06
+// will replace this with whatever circuit-friendly hash ZK-02 locks; the
+// JSON shape ("0x"-prefixed hex) is what consumers depend on, not the
+// digest value itself.
+func canonicalNullifier(userSecret, nonce string) string {
+	h := sha256.New()
+	h.Write([]byte("zkdex/nullifier/v0|"))
+	h.Write([]byte(userSecret))
+	h.Write([]byte("|"))
+	h.Write([]byte(nonce))
+	return "0x" + strings.ToLower(hex.EncodeToString(h.Sum(nil)))
 }
 
 func write(name string, v any) {
