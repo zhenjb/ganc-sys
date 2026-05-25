@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/zhenjb/ganc-sys/internal/prover"
+	"github.com/zhenjb/ganc-sys/internal/repository"
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
 
@@ -12,20 +13,21 @@ import (
 // P4 owns this service as integration glue.
 // P2 owns the actual prover implementation behind prover.Client.
 type ProofService struct {
-	proverClient prover.Client
+	proverClient    prover.Client
+	proofRepository *repository.ProofRepository
 }
 
-func NewProofService(proverClient prover.Client) *ProofService {
+func NewProofService(
+	proverClient prover.Client,
+	proofRepository *repository.ProofRepository,
+) *ProofService {
 	return &ProofService{
-		proverClient: proverClient,
+		proverClient:    proverClient,
+		proofRepository: proofRepository,
 	}
 }
 
 func (s *ProofService) GenerateProof(ctx context.Context, req types.GenerateProofRequestBody) (types.GenerateProofResponse, error) {
-	// P4 integration point:
-	// This calls the P2 prover interface.
-	// Today this is wired to prover.LocalClient.
-	// Later it should be replaced with P2's real prover implementation.
 	proofBundle, err := s.proverClient.GenerateProof(ctx, prover.GenerateProofInput{
 		SettlementUpdate: req.SettlementUpdate,
 		BatchCommitments: req.BatchCommitments,
@@ -34,6 +36,8 @@ func (s *ProofService) GenerateProof(ctx context.Context, req types.GenerateProo
 	if err != nil {
 		return types.GenerateProofResponse{}, err
 	}
+
+	s.proofRepository.SaveProofBundle(ctx, proofBundle)
 
 	return types.GenerateProofResponse{
 		ProofBundle: proofBundle,

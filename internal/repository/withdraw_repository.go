@@ -89,6 +89,10 @@ func (r *WithdrawRepository) GetWithdrawRecord(ctx context.Context, withdrawID s
 	return record, nil
 }
 
+func (r *WithdrawRepository) ListWithdrawRecords(ctx context.Context) []types.WithdrawRecord {
+	return r.store.ListWithdrawRecords()
+}
+
 func (r *WithdrawRepository) ClaimWithdrawRecord(ctx context.Context, withdrawID string) (types.WithdrawRecord, error) {
 	record, ok := r.store.GetWithdrawRecord(withdrawID)
 	if !ok {
@@ -99,31 +103,16 @@ func (r *WithdrawRepository) ClaimWithdrawRecord(ctx context.Context, withdrawID
 		return types.WithdrawRecord{}, ErrWithdrawAlreadyClaimed
 	}
 
-	record.Claimed = true
-	r.store.SaveWithdrawRecord(record)
+	claimedRecord, ok := r.store.ClaimWithdrawRecord(withdrawID)
+	if !ok {
+		return types.WithdrawRecord{}, ErrWithdrawRecordNotFound
+	}
 
-	return record, nil
-}
-
-func (r *WithdrawRepository) ListWithdrawRecords(ctx context.Context) []types.WithdrawRecord {
-	return r.store.ListWithdrawRecords()
+	return claimedRecord, nil
 }
 
 func (r *WithdrawRepository) GetLocalClaimBalanceSnapshot(ctx context.Context, record types.WithdrawRecord) types.BalanceSnapshot {
-	// TODO(INT-10 / P1):
-	// Replace with real chain balance query after MsgClaimWithdraw.
-	//
-	// Current local meaning:
-	// - user receives claimed withdraw amount,
-	// - module balance keeps remaining amount from the demo deposit path.
-	return types.BalanceSnapshot{
-		UserBalances: map[string]string{
-			record.Destination + "/" + record.Denom: record.Amount,
-		},
-		ModuleAccountBalance: map[string]string{
-			record.Denom: "60",
-		},
-	}
+	return r.store.GetBalanceSnapshot()
 }
 
 func localWithdrawSignature(parts ...string) string {

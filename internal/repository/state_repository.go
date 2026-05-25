@@ -3,49 +3,26 @@ package repository
 import (
 	"context"
 
+	"github.com/zhenjb/ganc-sys/internal/store"
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
 
-// StateRepository provides the current dashboard state.
+// StateRepository provides the dashboard read model.
 //
-// INT-04 status:
-// - This still returns a local initial state fixture.
-// - It does not query chain state yet.
-// - It does not read indexed events yet.
-//
-// TODO(INT-05+):
-// Replace local fixture data with data assembled from:
-// - indexed deposits,
-// - indexed batch submissions,
-// - indexed withdrawal records,
-// - chain/module account balance queries.
-type StateRepository struct{}
+// INT-11 status:
+//   - GET /api/state is now backed by MemoryStore.
+//   - It reflects latest deposit, withdraw request, batch, proof, submit,
+//     claim, balances, and statuses.
+type StateRepository struct {
+	store *store.MemoryStore
+}
 
-func NewStateRepository() *StateRepository {
-	return &StateRepository{}
+func NewStateRepository(store *store.MemoryStore) *StateRepository {
+	return &StateRepository{
+		store: store,
+	}
 }
 
 func (r *StateRepository) GetState(ctx context.Context) types.AppState {
-	return types.AppState{
-		Mode:             "local",
-		CurrentStateRoot: "0xrootA",
-		UserBalances: map[string]string{
-			"cosmos1alice/uusdc": "1000",
-		},
-		ModuleAccountBalance: map[string]string{
-			"uusdc": "0",
-		},
-
-		LatestDeposit:          nil,
-		LatestWithdrawRequest:  nil,
-		LatestSettlement:       nil,
-		LatestBatchCommitments: nil,
-		LatestProof:            nil,
-		LatestWithdrawRecords:  nil,
-
-		ProofStatus:    "idle",
-		DepositStatus:  "none",
-		WithdrawStatus: "none",
-		BatchStatus:    "none",
-	}
+	return r.store.GetAppState()
 }

@@ -72,6 +72,8 @@ func (s *BatchService) BuildBatch(ctx context.Context, req types.BuildBatchReque
 		return types.BuildBatchResponse{}, err
 	}
 
+	s.batchRepository.SaveBatchBuild(ctx, output.SettlementUpdate, output.BatchCommitments)
+
 	return types.BuildBatchResponse{
 		SettlementUpdate: output.SettlementUpdate,
 		BatchCommitments: output.BatchCommitments,
@@ -98,7 +100,12 @@ func (s *BatchService) SubmitBatch(ctx context.Context, req types.SubmitBatchReq
 		return types.SubmitBatchResponse{}, err
 	}
 
-	s.withdrawRepository.SaveWithdrawRecords(ctx, result.WithdrawRecords)
+	s.batchRepository.SaveBatchSubmitted(
+		ctx,
+		req.SettlementUpdate,
+		req.BatchCommitments,
+		result.WithdrawRecords,
+	)
 
 	return types.SubmitBatchResponse{
 		TxHash:           result.TxHash,

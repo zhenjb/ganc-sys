@@ -3,29 +3,42 @@ package repository
 import (
 	"context"
 
+	"github.com/zhenjb/ganc-sys/internal/store"
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
 
-// BatchRepository owns local batch-building fixtures.
+// BatchRepository owns local batch read-model persistence.
 //
-// INT-04 status:
-// - Batch build and batch submit still return local deterministic data.
-// - P3 batch builder is not connected yet.
-// - No real state transition or commitment calculation happens here yet.
+// INT-11 status:
+// - Batch build updates latestSettlement/latestBatchCommitments.
+// - Batch submit updates currentStateRoot/statuses/latestWithdrawRecords.
 //
-// TODO(INT-07 / P3):
-// Replace local fixtures with P3 batch builder output:
-// - SettlementUpdate with deposits[] and withdrawals[],
-// - BatchCommitments,
-// - Witness with accounts[].
-//
-// Important:
-// Mock data may contain one deposit and one withdrawal,
-// but schema must stay batch-shaped.
-type BatchRepository struct{}
+// P3 still owns the real batch builder implementation.
+type BatchRepository struct {
+	store *store.MemoryStore
+}
 
-func NewBatchRepository() *BatchRepository {
-	return &BatchRepository{}
+func NewBatchRepository(store *store.MemoryStore) *BatchRepository {
+	return &BatchRepository{
+		store: store,
+	}
+}
+
+func (r *BatchRepository) SaveBatchBuild(
+	ctx context.Context,
+	settlementUpdate types.SettlementUpdate,
+	batchCommitments types.BatchCommitments,
+) {
+	r.store.SaveBatchBuild(settlementUpdate, batchCommitments)
+}
+
+func (r *BatchRepository) SaveBatchSubmitted(
+	ctx context.Context,
+	settlementUpdate types.SettlementUpdate,
+	batchCommitments types.BatchCommitments,
+	withdrawRecords []types.WithdrawRecord,
+) {
+	r.store.SaveBatchSubmitted(settlementUpdate, batchCommitments, withdrawRecords)
 }
 
 func (r *BatchRepository) GetLocalSettlementUpdate(ctx context.Context) types.SettlementUpdate {

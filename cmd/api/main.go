@@ -26,7 +26,7 @@ func main() {
 	healthService := service.NewHealthService(healthRepository)
 	healthHandler := handler.NewHealthHandler(healthService)
 
-	stateRepository := repository.NewStateRepository()
+	stateRepository := repository.NewStateRepository(memoryStore)
 	stateService := service.NewStateService(stateRepository)
 	stateHandler := handler.NewStateHandler(stateService)
 
@@ -42,7 +42,7 @@ func main() {
 	withdrawService := service.NewWithdrawService(withdrawRepository, relayerClient)
 	withdrawHandler := handler.NewWithdrawHandler(withdrawService)
 
-	batchRepository := repository.NewBatchRepository()
+	batchRepository := repository.NewBatchRepository(memoryStore)
 	batchBuilder := batch.NewLocalBuilder()
 	batchService := service.NewBatchService(
 		batchRepository,
@@ -54,7 +54,8 @@ func main() {
 	batchHandler := handler.NewBatchHandler(batchService)
 
 	proverClient := prover.NewLocalClient()
-	proofService := service.NewProofService(proverClient)
+	proofRepository := repository.NewProofRepository(memoryStore)
+	proofService := service.NewProofService(proverClient, proofRepository)
 	proofHandler := handler.NewProofHandler(proofService)
 
 	router := api.NewRouter(api.RouterDeps{

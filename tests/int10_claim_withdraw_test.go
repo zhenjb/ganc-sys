@@ -51,12 +51,19 @@ func TestINT10ClaimWithdrawAfterBatchSubmit(t *testing.T) {
 	}
 
 	balanceKey := body.WithdrawRecord.Destination + "/" + body.WithdrawRecord.Denom
-	if body.Balances.UserBalances[balanceKey] != body.WithdrawRecord.Amount {
+	if body.Balances.UserBalances[balanceKey] != "940" {
 		t.Fatalf(
-			"expected user balance %s=%s, got %q",
+			"expected user balance %s=940, got %q",
 			balanceKey,
-			body.WithdrawRecord.Amount,
 			body.Balances.UserBalances[balanceKey],
+		)
+	}
+
+	if body.Balances.ModuleAccountBalance[body.WithdrawRecord.Denom] != "60" {
+		t.Fatalf(
+			"expected module balance %s=60, got %q",
+			body.WithdrawRecord.Denom,
+			body.Balances.ModuleAccountBalance[body.WithdrawRecord.Denom],
 		)
 	}
 }
