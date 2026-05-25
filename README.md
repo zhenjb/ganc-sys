@@ -46,4 +46,3 @@ Expected response:
 Use the provided Postman collection for all API flows.
 
 Postman collection: `docs/postman/ganc_sys_int01_int04.postman_collection.json`
-````
