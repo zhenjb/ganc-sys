@@ -13,24 +13,19 @@ import (
 )
 
 var ErrWithdrawRequestNotFound = errors.New("withdraw request not found")
+var ErrWithdrawRecordNotFound = errors.New("withdraw record not found")
+var ErrWithdrawAlreadyClaimed = errors.New("withdraw already claimed")
 
 // WithdrawRepository owns withdrawal request and withdrawal record access.
 //
-// INT-06 status:
-// - Withdraw requests are now created from user input.
-// - Withdraw requests are saved in local MemoryStore.
-// - P3 can query withdraw requests by withdrawId for batch building.
+// INT-10 status:
+// - Withdraw requests are persisted locally.
+// - Submit batch stores withdrawRecords[] locally.
+// - Claim withdraw reads and updates withdrawRecords locally.
 //
 // Still local/stubbed:
-// - signature is a deterministic local placeholder.
-// - no real user authorization signature is verified yet.
-// - claim withdraw still returns local deterministic data.
-//
-// TODO(INT-07 / P3):
-// Batch builder should consume persisted withdraw requests.
-//
-// TODO(INT-10 / P1):
-// Replace local claim fixture with MsgClaimWithdraw chain integration.
+// - real MsgClaimWithdraw is not connected yet.
+// - balances are local deterministic snapshots.
 type WithdrawRepository struct {
 	store *store.MemoryStore
 }
@@ -75,25 +70,58 @@ func (r *WithdrawRepository) ListWithdrawRequests(ctx context.Context) []types.W
 	return r.store.ListWithdrawRequests()
 }
 
-func (r *WithdrawRepository) GetLocalWithdrawRecord(ctx context.Context, claimed bool) types.WithdrawRecord {
-	return types.WithdrawRecord{
-		WithdrawID:  "wd-1",
-		Owner:       "cosmos1alice",
-		Denom:       "uusdc",
-		Amount:      "40",
-		Destination: "cosmos1alice",
-		Nullifier:   "0xmocknullifier",
-		Claimed:     claimed,
+func (r *WithdrawRepository) SaveWithdrawRecords(ctx context.Context, records []types.WithdrawRecord) {
+	for _, record := range records {
+		r.store.SaveWithdrawRecord(record)
 	}
 }
 
-func (r *WithdrawRepository) GetLocalClaimBalanceSnapshot(ctx context.Context) types.BalanceSnapshot {
+func (r *WithdrawRepository) SaveWithdrawRecord(ctx context.Context, record types.WithdrawRecord) {
+	r.store.SaveWithdrawRecord(record)
+}
+
+func (r *WithdrawRepository) GetWithdrawRecord(ctx context.Context, withdrawID string) (types.WithdrawRecord, error) {
+	record, ok := r.store.GetWithdrawRecord(withdrawID)
+	if !ok {
+		return types.WithdrawRecord{}, ErrWithdrawRecordNotFound
+	}
+
+	return record, nil
+}
+
+func (r *WithdrawRepository) ClaimWithdrawRecord(ctx context.Context, withdrawID string) (types.WithdrawRecord, error) {
+	record, ok := r.store.GetWithdrawRecord(withdrawID)
+	if !ok {
+		return types.WithdrawRecord{}, ErrWithdrawRecordNotFound
+	}
+
+	if record.Claimed {
+		return types.WithdrawRecord{}, ErrWithdrawAlreadyClaimed
+	}
+
+	record.Claimed = true
+	r.store.SaveWithdrawRecord(record)
+
+	return record, nil
+}
+
+func (r *WithdrawRepository) ListWithdrawRecords(ctx context.Context) []types.WithdrawRecord {
+	return r.store.ListWithdrawRecords()
+}
+
+func (r *WithdrawRepository) GetLocalClaimBalanceSnapshot(ctx context.Context, record types.WithdrawRecord) types.BalanceSnapshot {
+	// TODO(INT-10 / P1):
+	// Replace with real chain balance query after MsgClaimWithdraw.
+	//
+	// Current local meaning:
+	// - user receives claimed withdraw amount,
+	// - module balance keeps remaining amount from the demo deposit path.
 	return types.BalanceSnapshot{
 		UserBalances: map[string]string{
-			"cosmos1alice/uusdc": "940",
+			record.Destination + "/" + record.Denom: record.Amount,
 		},
 		ModuleAccountBalance: map[string]string{
-			"uusdc": "60",
+			record.Denom: "60",
 		},
 	}
 }

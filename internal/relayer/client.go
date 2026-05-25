@@ -10,7 +10,7 @@ import (
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
 
-// Client is the integration boundary for submitting a proved settlement batch.
+// Client is the integration boundary for settlement and withdraw chain actions.
 //
 // P4 owns:
 // - API integration,
@@ -19,13 +19,16 @@ import (
 //
 // P1 owns the real on-chain implementation:
 // - MsgSubmitBatchProof,
-// - proof verification in x/zkdex,
+// - MsgClaimWithdraw,
+// - proof verification,
 // - currentStateRoot update,
 // - depositProcessed update,
 // - nullifierUsed update,
-// - WithdrawRecord creation.
+// - WithdrawRecord creation,
+// - module-account fund transfer.
 type Client interface {
 	SubmitBatch(ctx context.Context, input SubmitBatchInput) (SubmitBatchResult, error)
+	ClaimWithdraw(ctx context.Context, input ClaimWithdrawInput) (ClaimWithdrawResult, error)
 }
 
 type SubmitBatchInput struct {
@@ -41,15 +44,25 @@ type SubmitBatchResult struct {
 	WithdrawRecords []types.WithdrawRecord
 }
 
+type ClaimWithdrawInput struct {
+	WithdrawRecord types.WithdrawRecord
+}
+
+type ClaimWithdrawResult struct {
+	TxHash         string
+	WithdrawRecord types.WithdrawRecord
+}
+
 // LocalClient is a temporary deterministic relayer placeholder.
 //
 // TODO(P1):
-// Replace this with a real Cosmos relayer/client that submits
-// MsgSubmitBatchProof to x/zkdex and parses tx result/events.
+// Replace this with a real Cosmos relayer/client that submits:
+// - MsgSubmitBatchProof
+// - MsgClaimWithdraw
 //
-// This local implementation does not verify a real ZK proof.
-// It only validates API-level public input consistency and creates
-// local WithdrawRecord objects from settlementUpdate.withdrawals[].
+// This local implementation does not verify a real ZK proof and does not
+// transfer real funds. It only preserves API shape and validates contract-level
+// consistency.
 type LocalClient struct{}
 
 func NewLocalClient() *LocalClient {
@@ -85,6 +98,26 @@ func (c *LocalClient) SubmitBatch(ctx context.Context, input SubmitBatchInput) (
 		Accepted:        true,
 		ProofStatus:     "accepted",
 		WithdrawRecords: withdrawRecords,
+	}, nil
+}
+
+func (c *LocalClient) ClaimWithdraw(ctx context.Context, input ClaimWithdrawInput) (ClaimWithdrawResult, error) {
+	if input.WithdrawRecord.WithdrawID == "" {
+		return ClaimWithdrawResult{}, fmt.Errorf("withdrawRecord is required")
+	}
+
+	if input.WithdrawRecord.Claimed {
+		return ClaimWithdrawResult{}, fmt.Errorf("withdraw already claimed")
+	}
+
+	claimedRecord := input.WithdrawRecord
+	claimedRecord.Claimed = true
+
+	txHash := hashJSON("local-claim-withdraw", claimedRecord)
+
+	return ClaimWithdrawResult{
+		TxHash:         txHash,
+		WithdrawRecord: claimedRecord,
 	}, nil
 }
 

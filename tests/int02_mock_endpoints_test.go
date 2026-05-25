@@ -420,8 +420,14 @@ func TestINT02SubmitBatchLocalContract(t *testing.T) {
 func TestINT02ClaimWithdrawLocalContract(t *testing.T) {
 	server := newTestServer()
 
+	submitBody := submitBatchForClaimTest(t, server)
+
+	if len(submitBody.WithdrawRecords) != 1 {
+		t.Fatalf("expected one withdrawRecord after submit batch")
+	}
+
 	req := types.ClaimWithdrawRequestBody{
-		WithdrawID: "wd-1",
+		WithdrawID: submitBody.WithdrawRecords[0].WithdrawID,
 	}
 
 	rec := performRequest(t, server, http.MethodPost, "/api/withdraw/claim", req)
@@ -436,12 +442,18 @@ func TestINT02ClaimWithdrawLocalContract(t *testing.T) {
 		t.Fatalf("expected withdrawRecord.claimed=true after claim")
 	}
 
-	if body.Balances.UserBalances["cosmos1alice/uusdc"] != "940" {
-		t.Fatalf("expected alice balance=940, got %q", body.Balances.UserBalances["cosmos1alice/uusdc"])
+	if body.WithdrawRecord.WithdrawID != req.WithdrawID {
+		t.Fatalf("expected withdrawId=%q, got %q", req.WithdrawID, body.WithdrawRecord.WithdrawID)
 	}
 
-	if body.Balances.ModuleAccountBalance["uusdc"] != "60" {
-		t.Fatalf("expected module balance=60, got %q", body.Balances.ModuleAccountBalance["uusdc"])
+	balanceKey := body.WithdrawRecord.Destination + "/" + body.WithdrawRecord.Denom
+	if body.Balances.UserBalances[balanceKey] != body.WithdrawRecord.Amount {
+		t.Fatalf(
+			"expected user balance %s=%s, got %q",
+			balanceKey,
+			body.WithdrawRecord.Amount,
+			body.Balances.UserBalances[balanceKey],
+		)
 	}
 
 	if body.State.WithdrawStatus != "claimed" {

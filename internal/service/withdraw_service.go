@@ -3,29 +3,34 @@ package service
 import (
 	"context"
 
+	"github.com/zhenjb/ganc-sys/internal/relayer"
 	"github.com/zhenjb/ganc-sys/internal/repository"
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
 
 // WithdrawService owns withdrawal request and claim use cases.
 //
-// INT-06 status:
-// - CreateWithdrawRequest creates a real local request from input.
-// - The request is saved in MemoryStore.
-// - P3/P5 can query saved requests.
+// INT-10 status:
+// - CreateWithdrawRequest creates and persists local withdraw requests.
+// - ClaimWithdraw now reads submitted withdrawRecords from store.
+// - ClaimWithdraw calls relayer.Client boundary.
+// - Claimed records are persisted back to store.
 //
 // Still local/stubbed:
-// - signature is local deterministic placeholder.
-// - off-chain balance debit is not implemented here.
-// - nullifier/withdraw output generation belongs to batch building.
-// - claim withdraw is still local fixture until MsgClaimWithdraw integration.
+// - relayer.LocalClient does not transfer real funds.
+// - balances are local deterministic snapshots.
 type WithdrawService struct {
 	withdrawRepository *repository.WithdrawRepository
+	relayerClient      relayer.Client
 }
 
-func NewWithdrawService(withdrawRepository *repository.WithdrawRepository) *WithdrawService {
+func NewWithdrawService(
+	withdrawRepository *repository.WithdrawRepository,
+	relayerClient relayer.Client,
+) *WithdrawService {
 	return &WithdrawService{
 		withdrawRepository: withdrawRepository,
+		relayerClient:      relayerClient,
 	}
 }
 
@@ -57,18 +62,32 @@ func (s *WithdrawService) GetWithdrawRequest(ctx context.Context, withdrawID str
 	}, nil
 }
 
-func (s *WithdrawService) ClaimWithdraw(ctx context.Context, req types.ClaimWithdrawRequestBody) types.ClaimWithdrawResponse {
-	// TODO(INT-10):
-	// Submit MsgClaimWithdraw(req.WithdrawID), then return indexed chain result.
-	withdrawRecord := s.withdrawRepository.GetLocalWithdrawRecord(ctx, true)
-	balances := s.withdrawRepository.GetLocalClaimBalanceSnapshot(ctx)
+func (s *WithdrawService) ClaimWithdraw(ctx context.Context, req types.ClaimWithdrawRequestBody) (types.ClaimWithdrawResponse, error) {
+	record, err := s.withdrawRepository.GetWithdrawRecord(ctx, req.WithdrawID)
+	if err != nil {
+		return types.ClaimWithdrawResponse{}, err
+	}
+
+	claimResult, err := s.relayerClient.ClaimWithdraw(ctx, relayer.ClaimWithdrawInput{
+		WithdrawRecord: record,
+	})
+	if err != nil {
+		return types.ClaimWithdrawResponse{}, err
+	}
+
+	claimedRecord, err := s.withdrawRepository.ClaimWithdrawRecord(ctx, claimResult.WithdrawRecord.WithdrawID)
+	if err != nil {
+		return types.ClaimWithdrawResponse{}, err
+	}
+
+	balances := s.withdrawRepository.GetLocalClaimBalanceSnapshot(ctx, claimedRecord)
 
 	return types.ClaimWithdrawResponse{
-		TxHash:         "0xmockclaimwithdraw",
-		WithdrawRecord: withdrawRecord,
+		TxHash:         claimResult.TxHash,
+		WithdrawRecord: claimedRecord,
 		Balances:       balances,
 		State: types.PartialState{
 			WithdrawStatus: "claimed",
 		},
-	}
+	}, nil
 }

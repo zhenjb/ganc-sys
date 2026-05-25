@@ -15,6 +15,9 @@ type MemoryStore struct {
 	withdrawRequests     map[string]types.WithdrawRequest
 	withdrawRequestOrder []string
 	nextWithdrawSeq      int
+
+	withdrawRecords     map[string]types.WithdrawRecord
+	withdrawRecordOrder []string
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -24,6 +27,8 @@ func NewMemoryStore() *MemoryStore {
 		withdrawRequests:     make(map[string]types.WithdrawRequest),
 		withdrawRequestOrder: make([]string, 0),
 		nextWithdrawSeq:      1,
+		withdrawRecords:      make(map[string]types.WithdrawRecord),
+		withdrawRecordOrder:  make([]string, 0),
 	}
 }
 
@@ -105,4 +110,39 @@ func (s *MemoryStore) ListWithdrawRequests() []types.WithdrawRequest {
 	}
 
 	return requests
+}
+
+func (s *MemoryStore) SaveWithdrawRecord(record types.WithdrawRecord) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.withdrawRecords[record.WithdrawID]; !exists {
+		s.withdrawRecordOrder = append(s.withdrawRecordOrder, record.WithdrawID)
+	}
+
+	s.withdrawRecords[record.WithdrawID] = record
+}
+
+func (s *MemoryStore) GetWithdrawRecord(withdrawID string) (types.WithdrawRecord, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	record, ok := s.withdrawRecords[withdrawID]
+	return record, ok
+}
+
+func (s *MemoryStore) ListWithdrawRecords() []types.WithdrawRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	records := make([]types.WithdrawRecord, 0, len(s.withdrawRecordOrder))
+
+	for _, withdrawID := range s.withdrawRecordOrder {
+		record, ok := s.withdrawRecords[withdrawID]
+		if ok {
+			records = append(records, record)
+		}
+	}
+
+	return records
 }

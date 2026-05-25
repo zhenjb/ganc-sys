@@ -31,6 +31,7 @@ func newTestServer() http.Handler {
 	stateHandler := handler.NewStateHandler(stateService)
 
 	chainClient := chain.NewLocalClient()
+	relayerClient := relayer.NewLocalClient()
 
 	depositRepository := repository.NewDepositRepository(memoryStore)
 	depositIndexer := indexer.NewDepositIndexer(depositRepository)
@@ -38,12 +39,11 @@ func newTestServer() http.Handler {
 	depositHandler := handler.NewDepositHandler(depositService)
 
 	withdrawRepository := repository.NewWithdrawRepository(memoryStore)
-	withdrawService := service.NewWithdrawService(withdrawRepository)
+	withdrawService := service.NewWithdrawService(withdrawRepository, relayerClient)
 	withdrawHandler := handler.NewWithdrawHandler(withdrawService)
 
 	batchRepository := repository.NewBatchRepository()
 	batchBuilder := batch.NewLocalBuilder()
-	relayerClient := relayer.NewLocalClient()
 	batchService := service.NewBatchService(
 		batchRepository,
 		depositRepository,

@@ -98,6 +98,8 @@ func (s *BatchService) SubmitBatch(ctx context.Context, req types.SubmitBatchReq
 		return types.SubmitBatchResponse{}, err
 	}
 
+	s.withdrawRepository.SaveWithdrawRecords(ctx, result.WithdrawRecords)
+
 	return types.SubmitBatchResponse{
 		TxHash:           result.TxHash,
 		Accepted:         result.Accepted,

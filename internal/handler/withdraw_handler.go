@@ -13,15 +13,10 @@ import (
 
 // WithdrawHandler exposes withdrawal request and claim endpoints.
 //
-// INT-06 status:
-// - POST /api/withdraw-request creates and persists a local withdraw request.
-// - GET /api/withdraw-requests lists persisted withdraw requests.
-// - GET /api/withdraw-requests/{withdrawId} returns one persisted request.
-//
-// Still local/stubbed:
-// - no real balance debit yet.
-// - no real nullifier generation here.
-// - claim withdraw is still local fixture until INT-10.
+// INT-10 status:
+// - POST /api/withdraw/claim claims a submitted withdrawRecord.
+// - unknown withdrawId returns 404.
+// - repeated claim returns 400.
 type WithdrawHandler struct {
 	withdrawService *service.WithdrawService
 }
@@ -85,6 +80,19 @@ func (h *WithdrawHandler) ClaimWithdraw(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	result := h.withdrawService.ClaimWithdraw(r.Context(), req)
+	result, err := h.withdrawService.ClaimWithdraw(r.Context(), req)
+	if err != nil {
+		switch {
+		case errors.Is(err, repository.ErrWithdrawRecordNotFound):
+			response.Error(w, http.StatusNotFound, "withdraw record not found")
+		case errors.Is(err, repository.ErrWithdrawAlreadyClaimed):
+			response.Error(w, http.StatusBadRequest, "withdraw already claimed")
+		default:
+			response.Error(w, http.StatusBadRequest, err.Error())
+		}
+
+		return
+	}
+
 	response.JSON(w, http.StatusOK, result)
 }
