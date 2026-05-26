@@ -1,9 +1,9 @@
-package main
+package tests
 
 import (
-	"log"
 	"net/http"
 	"os"
+	"testing"
 
 	"github.com/zhenjb/ganc-sys/internal/api"
 	"github.com/zhenjb/ganc-sys/internal/batch"
@@ -15,25 +15,57 @@ import (
 	"github.com/zhenjb/ganc-sys/internal/repository"
 	"github.com/zhenjb/ganc-sys/internal/service"
 	"github.com/zhenjb/ganc-sys/internal/store"
+	"github.com/zhenjb/ganc-sys/pkg/types"
 )
 
-func main() {
-	port := getenv("PORT", "8080")
+func TestRealStateEndpointUsesChainRestQuery(t *testing.T) {
+	if os.Getenv("RUN_CHAIN_REST_TESTS") != "1" {
+		t.Skip("set RUN_CHAIN_REST_TESTS=1 to run real chain REST tests")
+	}
 
+	baseURL := os.Getenv("CHAIN_REST_URL")
+	if baseURL == "" {
+		baseURL = "http://localhost:1317"
+	}
+
+	server := newRealStateTestServer(baseURL)
+
+	rec := performRequest(t, server, http.MethodGet, "/api/state", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected state status 200, got %d, body=%s", rec.Code, rec.Body.String())
+	}
+
+	body := decodeJSON[types.AppState](t, rec)
+
+	if body.CurrentStateRoot != "0xrootA" {
+		t.Fatalf("expected currentStateRoot=0xrootA from chain, got %q", body.CurrentStateRoot)
+	}
+
+	if body.ModuleAccountBalance == nil {
+		t.Fatalf("expected moduleAccountBalance")
+	}
+
+	if body.ModuleAccountBalance["uusdc"] != "0" {
+		t.Fatalf("expected uusdc module balance=0 on fresh chain, got %q", body.ModuleAccountBalance["uusdc"])
+	}
+
+	if body.Mode != "local" {
+		t.Fatalf("expected mode=local, got %q", body.Mode)
+	}
+}
+
+func newRealStateTestServer(chainRESTURL string) http.Handler {
 	memoryStore := store.NewMemoryStore()
-
-	chainQueryMode := getenv("CHAIN_QUERY_MODE", "local")
-	chainRESTURL := getenv("CHAIN_REST_URL", "http://localhost:1317")
-	chainQueryClient := chain.NewRestQueryClient(chainRESTURL)
 
 	healthRepository := repository.NewHealthRepository()
 	healthService := service.NewHealthService(healthRepository)
 	healthHandler := handler.NewHealthHandler(healthService)
 
+	chainQueryClient := chain.NewRestQueryClient(chainRESTURL)
 	stateRepository := repository.NewStateRepositoryWithChainQuery(
 		memoryStore,
 		chainQueryClient,
-		chainQueryMode,
+		"rest",
 	)
 	stateService := service.NewStateService(stateRepository)
 	stateHandler := handler.NewStateHandler(stateService)
@@ -75,20 +107,5 @@ func main() {
 		ProofHandler:    proofHandler,
 	})
 
-	addr := ":" + port
-	log.Printf("ganc-sys backend API listening on http://localhost%s", addr)
-	log.Printf("chain query mode=%s rest=%s", chainQueryMode, chainRESTURL)
-
-	if err := http.ListenAndServe(addr, router.Routes()); err != nil {
-		log.Fatal(err)
-	}
-}
-
-func getenv(key string, fallback string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
-	}
-
-	return value
+	return router.Routes()
 }
