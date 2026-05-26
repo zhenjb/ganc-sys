@@ -1,0 +1,67 @@
+{
+  "case": "duplicate_nullifier",
+  "title": "Duplicate nullifier — withdrawal thứ hai reuse nullifier wd-1 trong cùng batch",
+  "description": "Settlement update có 2 withdrawals[]: wd-1 (happy path) và wd-2-replay (clone nullifier + destinationHash của wd-1). Chain phải reject vì nullifier xuất hiện 2 lần trong cùng batch — cross-batch replay (nullifierUsed[n] đã true) thuộc cùng family invariant.",
+  "violatedInvariant": "Trong batch và xuyên batch, mỗi nullifier chỉ được sử dụng tối đa một lần (nullifierUsed[nullifier] == false trước khi apply).",
+  "happyPathReference": "alice_100_40",
+  "mutation": "Append withdrawals[1] = {withdrawId:'wd-2-replay', amount:'20', nullifier: \u003chappy path\u003e, destinationHash: \u003chappy path\u003e}; mọi field khác giữ nguyên wd-1.",
+  "rejection": {
+    "stage": "P1 x/zkdex MsgSubmitBatchProof verifier",
+    "sentinel": "x/zkdex: ErrNullifierReplay (P1 ONCHAIN-08)",
+    "messageContains": "nullifier",
+    "note": "STATE-05 cũng reject với state.ErrWithdrawAlreadyApplied nếu pipeline thử apply tuần tự — sentinel state-side khác chain-side, nhưng cùng family invariant. P3 batch.LocalBuilder.Build hiện reject ở STATE-05 với ErrInvalidBuildInput wrap."
+  },
+  "consumers": [
+    "P1",
+    "P3",
+    "P4"
+  ],
+  "nullifier": "0x1a1fdf4ccecb7040b7cd7e125226d14ed7717618d996dab969d4cb12550b22f7",
+  "settlementUpdate": {
+    "batchId": "batch-1",
+    "oldStateRoot": "0x9b325b4150d417adfd816930b6f291aaf9493995fe0f960864c616ff178f8620",
+    "newStateRoot": "0x44d60f77db879799be6212c46d198243cbe2fe2969901ca3663dfb204276250c",
+    "deposits": [
+      {
+        "depositId": "dep-1",
+        "owner": "cosmos1alice",
+        "denom": "uusdc",
+        "amount": "100"
+      }
+    ],
+    "withdrawals": [
+      {
+        "withdrawId": "wd-1",
+        "owner": "cosmos1alice",
+        "denom": "uusdc",
+        "amount": "40",
+        "destination": "cosmos1alice",
+        "destinationHash": "0xa75ac956249df4c45b83281c5af6187c59df9709fd1c25b5e61b12d71a8eb417",
+        "nullifier": "0x1a1fdf4ccecb7040b7cd7e125226d14ed7717618d996dab969d4cb12550b22f7"
+      },
+      {
+        "withdrawId": "wd-2-replay",
+        "owner": "cosmos1alice",
+        "denom": "uusdc",
+        "amount": "20",
+        "destination": "cosmos1alice",
+        "destinationHash": "0xa75ac956249df4c45b83281c5af6187c59df9709fd1c25b5e61b12d71a8eb417",
+        "nullifier": "0x1a1fdf4ccecb7040b7cd7e125226d14ed7717618d996dab969d4cb12550b22f7"
+      }
+    ]
+  },
+  "batchCommitments": {
+    "depositsRoot": "0x5ed1bb5ad7bc2681e3ff91a63f2183052caa6479ba0e9d02d87392d24e1bbc40",
+    "withdrawalsRoot": "0x30dbd400b819251927db662581fd2737733809ef3858a550e142f2bc55a77d9a",
+    "nullifiersRoot": "0x807625f4d45b55a3cee5cc36deb880821f7758276f55f93ab25e65784419f9c8",
+    "withdrawOutputsRoot": "0xc1f8813c2fc59189bc9041ec905e60bbbb167e391295e2c9772cf655eb685409"
+  },
+  "publicInputs": [
+    "0x9b325b4150d417adfd816930b6f291aaf9493995fe0f960864c616ff178f8620",
+    "0x44d60f77db879799be6212c46d198243cbe2fe2969901ca3663dfb204276250c",
+    "0x5ed1bb5ad7bc2681e3ff91a63f2183052caa6479ba0e9d02d87392d24e1bbc40",
+    "0x30dbd400b819251927db662581fd2737733809ef3858a550e142f2bc55a77d9a",
+    "0x807625f4d45b55a3cee5cc36deb880821f7758276f55f93ab25e65784419f9c8",
+    "0xc1f8813c2fc59189bc9041ec905e60bbbb167e391295e2c9772cf655eb685409"
+  ]
+}

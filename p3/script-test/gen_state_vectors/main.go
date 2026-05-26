@@ -524,6 +524,23 @@ func main() {
 	fmt.Printf("manifest (STATE-11): %s (%d files, version %s)\n",
 		manifestName, len(w.files), vectorVersion)
 	fmt.Println("wrote vectors into", outDir)
+
+	// STATE-12 — emit failure_vectors subfolder + manifest sau khi happy
+	// path đã chốt artifacts. Gọi sau cùng để các vector negative tham
+	// chiếu trực tiếp dữ liệu canonical mà generator vừa sinh.
+	emitFailureVectors(outDir, happyPathArtifacts{
+		RootA:           rootA,
+		RootB:           rootB,
+		RootC:           rootC,
+		Deposit:         dep1,
+		WithdrawRequest: wdReq,
+		Nullifier:       nullifier,
+		DestinationHash: destinationHash,
+		Settlement:      upd,
+		Commitments:     commitments,
+	})
+	fmt.Println("failure vectors (STATE-12) wrote into",
+		filepath.Join(outDir, "failure_vectors"))
 }
 
 // canonicalTxHash mirrors recipe của P4 chain.MockClient

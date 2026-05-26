@@ -99,6 +99,13 @@ Có chủ đích — đây là **distinction** giữa:
 - **P4 (backend)**: dùng `deposit_dep_1.json` + `withdraw_request_wd_1.json` làm fixture cho integration test; dùng `MANIFEST.json::roots.rootA` để init genesis local chain.
 - **P5 (frontend)**: dùng `MANIFEST.json::alice` để hiển thị scenario demo; dùng `settlement_update_batch_1.json` + `public_inputs_batch_1.json` cho screenshot pack.
 
-## Failure vectors (STATE-12, P1 priority — chưa có)
+## Failure vectors (STATE-12 — đã có)
 
-Folder hiện chỉ chứa happy path. STATE-12 sẽ thêm subfolder/file negative (over-withdraw, wrong root, duplicate nullifier, tampered destination) — tách riêng khỏi happy path để consumer không nhầm.
+Negative test vectors nằm trong subfolder [`failure_vectors/`](./failure_vectors/) với MANIFEST.json riêng:
+
+- `over_withdraw.json` — STATE-04 reject vì balance không đủ.
+- `wrong_root.json` — P1 chain reject vì `oldStateRoot` lệch.
+- `duplicate_nullifier.json` — chain/STATE-05 reject vì nullifier replay.
+- `tampered_destination.json` — P2/P1 reject vì `destinationHash != H(destination)`.
+
+Xem [`failure_vectors/README.md`](./failure_vectors/README.md) cho schema + cách dùng từ Go (`testvectors.LoadFailureBundle()`).
