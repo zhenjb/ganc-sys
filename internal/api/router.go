@@ -7,31 +7,34 @@ import (
 )
 
 type RouterDeps struct {
-	HealthHandler   *handler.HealthHandler
-	StateHandler    *handler.StateHandler
-	DepositHandler  *handler.DepositHandler
-	WithdrawHandler *handler.WithdrawHandler
-	BatchHandler    *handler.BatchHandler
-	ProofHandler    *handler.ProofHandler
+	HealthHandler     *handler.HealthHandler
+	StateHandler      *handler.StateHandler
+	DepositHandler    *handler.DepositHandler
+	WithdrawHandler   *handler.WithdrawHandler
+	BatchHandler      *handler.BatchHandler
+	ProofHandler      *handler.ProofHandler
+	ChainQueryHandler *handler.ChainQueryHandler
 }
 
 type Router struct {
-	healthHandler   *handler.HealthHandler
-	stateHandler    *handler.StateHandler
-	depositHandler  *handler.DepositHandler
-	withdrawHandler *handler.WithdrawHandler
-	batchHandler    *handler.BatchHandler
-	proofHandler    *handler.ProofHandler
+	healthHandler     *handler.HealthHandler
+	stateHandler      *handler.StateHandler
+	depositHandler    *handler.DepositHandler
+	withdrawHandler   *handler.WithdrawHandler
+	batchHandler      *handler.BatchHandler
+	proofHandler      *handler.ProofHandler
+	chainQueryHandler *handler.ChainQueryHandler
 }
 
 func NewRouter(deps RouterDeps) *Router {
 	return &Router{
-		healthHandler:   deps.HealthHandler,
-		stateHandler:    deps.StateHandler,
-		depositHandler:  deps.DepositHandler,
-		withdrawHandler: deps.WithdrawHandler,
-		batchHandler:    deps.BatchHandler,
-		proofHandler:    deps.ProofHandler,
+		healthHandler:     deps.HealthHandler,
+		stateHandler:      deps.StateHandler,
+		depositHandler:    deps.DepositHandler,
+		withdrawHandler:   deps.WithdrawHandler,
+		batchHandler:      deps.BatchHandler,
+		proofHandler:      deps.ProofHandler,
+		chainQueryHandler: deps.ChainQueryHandler,
 	}
 }
 
@@ -55,6 +58,11 @@ func (r *Router) Routes() http.Handler {
 	mux.HandleFunc("POST /api/batch/submit", r.batchHandler.SubmitBatch)
 
 	mux.HandleFunc("POST /api/proof/generate", r.proofHandler.GenerateProof)
+
+	if r.chainQueryHandler != nil {
+		mux.HandleFunc("GET /api/chain/withdraw-records/{withdrawId}", r.chainQueryHandler.GetWithdrawRecord)
+		mux.HandleFunc("GET /api/chain/nullifiers/{nullifier}", r.chainQueryHandler.GetNullifierUsed)
+	}
 
 	return withCORS(mux)
 }

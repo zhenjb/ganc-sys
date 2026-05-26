@@ -1,9 +1,9 @@
-package main
+package tests
 
 import (
-	"log"
 	"net/http"
 	"os"
+	"testing"
 
 	"github.com/zhenjb/ganc-sys/internal/api"
 	"github.com/zhenjb/ganc-sys/internal/batch"
@@ -17,23 +17,73 @@ import (
 	"github.com/zhenjb/ganc-sys/internal/store"
 )
 
-func main() {
-	port := getenv("PORT", "8080")
+func TestRealChainWithdrawRecordEndpointReturnsNotFound(t *testing.T) {
+	if os.Getenv("RUN_CHAIN_REST_TESTS") != "1" {
+		t.Skip("set RUN_CHAIN_REST_TESTS=1 to run real chain REST tests")
+	}
+
+	server := newRealChainSupportTestServer(t)
+
+	rec := performRequest(t, server, http.MethodGet, "/api/chain/withdraw-records/wd-1", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d, body=%s", rec.Code, rec.Body.String())
+	}
+
+	body := decodeJSON[map[string]string](t, rec)
+
+	if body["error"] != "withdraw record not found" {
+		t.Fatalf("expected withdraw record not found error, got %q", body["error"])
+	}
+}
+
+func TestRealChainNullifierEndpointReturnsUsedFalse(t *testing.T) {
+	if os.Getenv("RUN_CHAIN_REST_TESTS") != "1" {
+		t.Skip("set RUN_CHAIN_REST_TESTS=1 to run real chain REST tests")
+	}
+
+	server := newRealChainSupportTestServer(t)
+
+	rec := performRequest(t, server, http.MethodGet, "/api/chain/nullifiers/0xmocknullifier", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d, body=%s", rec.Code, rec.Body.String())
+	}
+
+	body := decodeJSON[map[string]any](t, rec)
+
+	if body["nullifier"] != "0xmocknullifier" {
+		t.Fatalf("expected nullifier=0xmocknullifier, got %v", body["nullifier"])
+	}
+
+	used, ok := body["used"].(bool)
+	if !ok {
+		t.Fatalf("expected used boolean, got %T", body["used"])
+	}
+
+	if used {
+		t.Fatalf("expected used=false")
+	}
+}
+
+func newRealChainSupportTestServer(t *testing.T) http.Handler {
+	t.Helper()
+
+	baseURL := os.Getenv("CHAIN_REST_URL")
+	if baseURL == "" {
+		baseURL = "http://localhost:1317"
+	}
 
 	memoryStore := store.NewMemoryStore()
-
-	chainQueryMode := getenv("CHAIN_QUERY_MODE", "rest")
-	chainRESTURL := getenv("CHAIN_REST_URL", "http://localhost:1317")
-	chainQueryClient := chain.NewRestQueryClient(chainRESTURL)
 
 	healthRepository := repository.NewHealthRepository()
 	healthService := service.NewHealthService(healthRepository)
 	healthHandler := handler.NewHealthHandler(healthService)
 
+	chainQueryClient := chain.NewRestQueryClient(baseURL)
+
 	stateRepository := repository.NewStateRepositoryWithChainQuery(
 		memoryStore,
 		chainQueryClient,
-		chainQueryMode,
+		"rest",
 	)
 	stateService := service.NewStateService(stateRepository)
 	stateHandler := handler.NewStateHandler(stateService)
@@ -44,7 +94,7 @@ func main() {
 	depositRepository := repository.NewDepositRepositoryWithChainQuery(
 		memoryStore,
 		chainQueryClient,
-		chainQueryMode,
+		"rest",
 	)
 	depositIndexer := indexer.NewDepositIndexer(depositRepository)
 	depositService := service.NewDepositService(depositRepository, depositIndexer, chainClient)
@@ -83,20 +133,5 @@ func main() {
 		ChainQueryHandler: chainQueryHandler,
 	})
 
-	addr := ":" + port
-	log.Printf("ganc-sys backend API listening on http://localhost%s", addr)
-	log.Printf("chain query mode=%s rest=%s", chainQueryMode, chainRESTURL)
-
-	if err := http.ListenAndServe(addr, router.Routes()); err != nil {
-		log.Fatal(err)
-	}
-}
-
-func getenv(key string, fallback string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
-	}
-
-	return value
+	return router.Routes()
 }
