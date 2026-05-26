@@ -2,6 +2,9 @@ package repository
 
 import "context"
 
+// HealthRepository provides basic service health data.
+//
+// This repository has no external dependency.
 type HealthRepository struct{}
 
 func NewHealthRepository() *HealthRepository {

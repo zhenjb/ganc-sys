@@ -8,26 +8,63 @@ import (
 	"testing"
 
 	"github.com/zhenjb/ganc-sys/internal/api"
+	"github.com/zhenjb/ganc-sys/internal/batch"
 	"github.com/zhenjb/ganc-sys/internal/chain"
 	"github.com/zhenjb/ganc-sys/internal/handler"
+	"github.com/zhenjb/ganc-sys/internal/indexer"
+	"github.com/zhenjb/ganc-sys/internal/prover"
+	"github.com/zhenjb/ganc-sys/internal/relayer"
 	"github.com/zhenjb/ganc-sys/internal/repository"
 	"github.com/zhenjb/ganc-sys/internal/service"
+	"github.com/zhenjb/ganc-sys/internal/store"
 )
 
 func newTestServer() http.Handler {
+	memoryStore := store.NewMemoryStore()
+
 	healthRepository := repository.NewHealthRepository()
 	healthService := service.NewHealthService(healthRepository)
 	healthHandler := handler.NewHealthHandler(healthService)
 
-	chainClient := chain.NewMockClient()
+	stateRepository := repository.NewStateRepository(memoryStore)
+	stateService := service.NewStateService(stateRepository)
+	stateHandler := handler.NewStateHandler(stateService)
 
-	mockRepository := repository.NewMockRepository()
-	mockService := service.NewMockService(mockRepository, chainClient)
-	mockHandler := handler.NewMockHandler(mockService)
+	chainClient := chain.NewLocalClient()
+	relayerClient := relayer.NewLocalClient()
+
+	depositRepository := repository.NewDepositRepository(memoryStore)
+	depositIndexer := indexer.NewDepositIndexer(depositRepository)
+	depositService := service.NewDepositService(depositRepository, depositIndexer, chainClient)
+	depositHandler := handler.NewDepositHandler(depositService)
+
+	withdrawRepository := repository.NewWithdrawRepository(memoryStore)
+	withdrawService := service.NewWithdrawService(withdrawRepository, relayerClient)
+	withdrawHandler := handler.NewWithdrawHandler(withdrawService)
+
+	batchRepository := repository.NewBatchRepository(memoryStore)
+	batchBuilder := batch.NewLocalBuilder()
+	batchService := service.NewBatchService(
+		batchRepository,
+		depositRepository,
+		withdrawRepository,
+		batchBuilder,
+		relayerClient,
+	)
+	batchHandler := handler.NewBatchHandler(batchService)
+
+	proverClient := prover.NewLocalClient()
+	proofRepository := repository.NewProofRepository(memoryStore)
+	proofService := service.NewProofService(proverClient, proofRepository)
+	proofHandler := handler.NewProofHandler(proofService)
 
 	router := api.NewRouter(api.RouterDeps{
-		HealthHandler: healthHandler,
-		MockHandler:   mockHandler,
+		HealthHandler:   healthHandler,
+		StateHandler:    stateHandler,
+		DepositHandler:  depositHandler,
+		WithdrawHandler: withdrawHandler,
+		BatchHandler:    batchHandler,
+		ProofHandler:    proofHandler,
 	})
 
 	return router.Routes()
