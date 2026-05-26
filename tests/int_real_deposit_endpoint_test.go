@@ -1,9 +1,9 @@
-package main
+package tests
 
 import (
-	"log"
 	"net/http"
 	"os"
+	"testing"
 
 	"github.com/zhenjb/ganc-sys/internal/api"
 	"github.com/zhenjb/ganc-sys/internal/batch"
@@ -17,23 +17,43 @@ import (
 	"github.com/zhenjb/ganc-sys/internal/store"
 )
 
-func main() {
-	port := getenv("PORT", "8080")
+func TestRealDepositEndpointFallsBackToChainRestAndReturnsNotFound(t *testing.T) {
+	if os.Getenv("RUN_CHAIN_REST_TESTS") != "1" {
+		t.Skip("set RUN_CHAIN_REST_TESTS=1 to run real chain REST tests")
+	}
 
+	baseURL := os.Getenv("CHAIN_REST_URL")
+	if baseURL == "" {
+		baseURL = "http://localhost:1317"
+	}
+
+	server := newRealDepositTestServer(baseURL)
+
+	rec := performRequest(t, server, http.MethodGet, "/api/deposits/dep-1", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected deposit status 404, got %d, body=%s", rec.Code, rec.Body.String())
+	}
+
+	body := decodeJSON[map[string]string](t, rec)
+
+	if body["error"] != "deposit not found" {
+		t.Fatalf("expected deposit not found error, got %q", body["error"])
+	}
+}
+
+func newRealDepositTestServer(chainRESTURL string) http.Handler {
 	memoryStore := store.NewMemoryStore()
-
-	chainQueryMode := getenv("CHAIN_QUERY_MODE", "local")
-	chainRESTURL := getenv("CHAIN_REST_URL", "http://localhost:1317")
-	chainQueryClient := chain.NewRestQueryClient(chainRESTURL)
 
 	healthRepository := repository.NewHealthRepository()
 	healthService := service.NewHealthService(healthRepository)
 	healthHandler := handler.NewHealthHandler(healthService)
 
+	chainQueryClient := chain.NewRestQueryClient(chainRESTURL)
+
 	stateRepository := repository.NewStateRepositoryWithChainQuery(
 		memoryStore,
 		chainQueryClient,
-		chainQueryMode,
+		"rest",
 	)
 	stateService := service.NewStateService(stateRepository)
 	stateHandler := handler.NewStateHandler(stateService)
@@ -44,7 +64,7 @@ func main() {
 	depositRepository := repository.NewDepositRepositoryWithChainQuery(
 		memoryStore,
 		chainQueryClient,
-		chainQueryMode,
+		"rest",
 	)
 	depositIndexer := indexer.NewDepositIndexer(depositRepository)
 	depositService := service.NewDepositService(depositRepository, depositIndexer, chainClient)
@@ -79,20 +99,5 @@ func main() {
 		ProofHandler:    proofHandler,
 	})
 
-	addr := ":" + port
-	log.Printf("ganc-sys backend API listening on http://localhost%s", addr)
-	log.Printf("chain query mode=%s rest=%s", chainQueryMode, chainRESTURL)
-
-	if err := http.ListenAndServe(addr, router.Routes()); err != nil {
-		log.Fatal(err)
-	}
-}
-
-func getenv(key string, fallback string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
-	}
-
-	return value
+	return router.Routes()
 }
