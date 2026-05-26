@@ -1,8 +1,0 @@
-{
-  "withdrawId": "wd-1",
-  "destination": "cosmos1alice",
-  "domainTag": "zkdex/withdrawAddr/v0",
-  "hashAlgorithm": "sha256",
-  "withdrawAddressHash": "0xa75ac956249df4c45b83281c5af6187c59df9709fd1c25b5e61b12d71a8eb417",
-  "note": "STATE-07 — withdrawAddressHash(domain | destination). Placeholder hash until ZK-02 locks Poseidon/MiMC; bump domain tag then regenerate."
-}

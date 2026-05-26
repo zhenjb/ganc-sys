@@ -20,7 +20,7 @@ var (
 // WithdrawRequest. This is STATE-05 of the P3 pipeline.
 //
 // `nullifier` is the deterministic identifier produced by STATE-06
-// (`Hash(userSecret, request.Nonce)`). It is the idempotency key:
+// (`Hash(userSecret, request.Nonce)`). It is the idempotency key:Debiy
 // re-applying the same nullifier returns ErrWithdrawAlreadyApplied.
 // We accept it as an explicit argument so STATE-05 stays decoupled from
 // the hash scheme chosen by STATE-06/ZK-02.

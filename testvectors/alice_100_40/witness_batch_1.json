@@ -1,6 +1,11 @@
 {
-  "userSecret": "alice_secret",
-  "nonce": "1",
-  "oldBalance": "0",
-  "newBalance": "60"
+  "accounts": [
+    {
+      "owner": "cosmos1alice",
+      "userSecret": "alice_secret",
+      "nonce": "1",
+      "oldBalance": "0",
+      "newBalance": "60"
+    }
+  ]
 }

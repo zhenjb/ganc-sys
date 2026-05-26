@@ -17,10 +17,9 @@ const (
 	aliceSecret = "alice_secret"
 )
 
-// canonicalAlice runs the full STATE-02..07 pipeline against a fresh
-// LocalState, returning everything STATE-08 needs to assemble the
-// Alice 100/40 SettlementUpdate. Mirrors the gen_state_vectors recipe
-// 1:1 so tests are byte-identical with the on-disk vector.
+// canonicalAlice chạy đầy đủ STATE-02..07 pipeline trên một LocalState
+// mới, trả về mọi thứ STATE-08 cần để build Alice 100/40 batch-shaped
+// SettlementUpdate (1 deposit, 1 withdrawal).
 func canonicalAlice(t *testing.T) batch.SettlementInputs {
 	t.Helper()
 
@@ -54,7 +53,7 @@ func canonicalAlice(t *testing.T) batch.SettlementInputs {
 	if err != nil {
 		t.Fatalf("NullifierFor: %v", err)
 	}
-	addrHash, err := state.WithdrawAddressHash(req.Destination)
+	destinationHash, err := state.WithdrawAddressHash(req.Destination)
 	if err != nil {
 		t.Fatalf("WithdrawAddressHash: %v", err)
 	}
@@ -65,12 +64,12 @@ func canonicalAlice(t *testing.T) batch.SettlementInputs {
 	}
 
 	return batch.SettlementInputs{
-		OldStateRoot:        oldRoot,
-		NewStateRoot:        newRoot,
-		Deposit:             dep,
-		Withdraw:            req,
-		Nullifier:           nullifier,
-		WithdrawAddressHash: addrHash,
+		OldStateRoot: oldRoot,
+		NewStateRoot: newRoot,
+		Deposits:     []types.DepositRecord{dep},
+		Withdrawals: []batch.WithdrawalInput{
+			{Request: req, Nullifier: nullifier, DestinationHash: destinationHash},
+		},
 	}
 }
 
@@ -92,19 +91,23 @@ func TestBuild_CanonicalAliceVector(t *testing.T) {
 	if upd.NewStateRoot != in.NewStateRoot {
 		t.Fatalf("NewStateRoot mismatch:\n  want %s\n  got  %s", in.NewStateRoot, upd.NewStateRoot)
 	}
-	if upd.DepositID != "dep-1" || upd.DepositAmount != "100" {
-		t.Fatalf("Deposit fields: %+v", upd)
+	if len(upd.Deposits) != 1 || upd.Deposits[0].DepositID != "dep-1" || upd.Deposits[0].Amount != "100" {
+		t.Fatalf("Deposits[0]: %+v", upd.Deposits)
 	}
-	if upd.WithdrawID != "wd-1" || upd.WithdrawAmount != "40" {
-		t.Fatalf("Withdraw fields: %+v", upd)
+	if upd.Deposits[0].Owner != aliceAddr || upd.Deposits[0].Denom != denom {
+		t.Fatalf("Deposits[0] owner/denom: %+v", upd.Deposits[0])
 	}
-	if upd.WithdrawAddress != aliceAddr {
-		t.Fatalf("WithdrawAddress: want %s, got %s", aliceAddr, upd.WithdrawAddress)
+	if len(upd.Withdrawals) != 1 {
+		t.Fatalf("Withdrawals length: want 1, got %d", len(upd.Withdrawals))
 	}
-	if upd.WithdrawAddressHash != in.WithdrawAddressHash {
-		t.Fatalf("WithdrawAddressHash mismatch")
+	w := upd.Withdrawals[0]
+	if w.WithdrawID != "wd-1" || w.Amount != "40" || w.Destination != aliceAddr {
+		t.Fatalf("Withdrawals[0]: %+v", w)
 	}
-	if upd.Nullifier != in.Nullifier {
+	if w.DestinationHash != in.Withdrawals[0].DestinationHash {
+		t.Fatalf("DestinationHash mismatch")
+	}
+	if w.Nullifier != in.Withdrawals[0].Nullifier {
 		t.Fatalf("Nullifier mismatch")
 	}
 }
@@ -114,11 +117,8 @@ func TestBuild_SequentialBatchIDs(t *testing.T) {
 	b := batch.NewSettlementUpdateBuilder()
 
 	for i := 1; i <= 4; i++ {
-		// Use varying nullifier/root pairs so each Build call passes
-		// the no-op guard. We are not asserting correctness of those
-		// values here, only that BatchID advances by exactly +1.
 		in.NewStateRoot = "0x" + strings.Repeat("a", 60) + lpad(i)
-		in.Nullifier = "0x" + strings.Repeat("b", 60) + lpad(i)
+		in.Withdrawals[0].Nullifier = "0x" + strings.Repeat("b", 60) + lpad(i)
 		upd, err := b.Build(in)
 		if err != nil {
 			t.Fatalf("Build #%d: %v", i, err)
@@ -147,30 +147,40 @@ func TestBuild_RejectsNoOpBatch(t *testing.T) {
 	}
 }
 
-func TestBuild_RejectsTamperedWithdrawAddressHash(t *testing.T) {
+func TestBuild_RejectsEmptyBatch(t *testing.T) {
 	in := canonicalAlice(t)
-	// Attacker rewrites the destination (or equivalently, the hash) so
-	// the proof would be valid against a different recipient than the
-	// chain re-derives. STATE-08 must catch this defense-in-depth.
-	in.Withdraw.Destination = "cosmos1mallory"
+	in.Deposits = nil
+	in.Withdrawals = nil
 
-	b := batch.NewSettlementUpdateBuilder()
-	_, err := b.Build(in)
+	_, err := batch.NewSettlementUpdateBuilder().Build(in)
 	if !errors.Is(err, batch.ErrInvalidSettlementInputs) {
 		t.Fatalf("want ErrInvalidSettlementInputs, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "withdrawAddressHash mismatch") {
+	if !strings.Contains(err.Error(), "empty batch") {
+		t.Fatalf("error should mention empty batch: %v", err)
+	}
+}
+
+func TestBuild_RejectsTamperedDestinationHash(t *testing.T) {
+	in := canonicalAlice(t)
+	// Attacker đổi destination mà KHÔNG re-derive destinationHash —
+	// STATE-08 phải catch (defense-in-depth).
+	in.Withdrawals[0].Request.Destination = "cosmos1mallory"
+
+	_, err := batch.NewSettlementUpdateBuilder().Build(in)
+	if !errors.Is(err, batch.ErrInvalidSettlementInputs) {
+		t.Fatalf("want ErrInvalidSettlementInputs, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "destinationHash mismatch") {
 		t.Fatalf("error should pinpoint hash mismatch: %v", err)
 	}
 }
 
 func TestBuild_RejectsMixedDenom(t *testing.T) {
 	in := canonicalAlice(t)
-	in.Withdraw.Denom = "uatom"
-	// Re-derive address hash so we don't trip the address-hash guard first.
+	in.Withdrawals[0].Request.Denom = "uatom"
 
-	b := batch.NewSettlementUpdateBuilder()
-	_, err := b.Build(in)
+	_, err := batch.NewSettlementUpdateBuilder().Build(in)
 	if !errors.Is(err, batch.ErrInvalidSettlementInputs) {
 		t.Fatalf("want ErrInvalidSettlementInputs, got %v", err)
 	}
@@ -206,16 +216,16 @@ func TestBuild_InvalidRoots(t *testing.T) {
 	}
 }
 
-func TestBuild_InvalidNullifierAndAddressHash(t *testing.T) {
+func TestBuild_InvalidNullifierAndDestinationHash(t *testing.T) {
 	cases := []struct {
 		name       string
 		mutate     func(*batch.SettlementInputs)
 		wantSubstr string
 	}{
-		{"nullifier empty", func(in *batch.SettlementInputs) { in.Nullifier = "" }, "nullifier is empty"},
-		{"nullifier no 0x", func(in *batch.SettlementInputs) { in.Nullifier = "abc" }, "missing 0x"},
-		{"addrHash empty", func(in *batch.SettlementInputs) { in.WithdrawAddressHash = "" }, "withdrawAddressHash is empty"},
-		{"addrHash no 0x", func(in *batch.SettlementInputs) { in.WithdrawAddressHash = "ff" }, "missing 0x"},
+		{"nullifier empty", func(in *batch.SettlementInputs) { in.Withdrawals[0].Nullifier = "" }, "nullifier is empty"},
+		{"nullifier no 0x", func(in *batch.SettlementInputs) { in.Withdrawals[0].Nullifier = "abc" }, "missing 0x"},
+		{"destinationHash empty", func(in *batch.SettlementInputs) { in.Withdrawals[0].DestinationHash = "" }, "destinationHash is empty"},
+		{"destinationHash no 0x", func(in *batch.SettlementInputs) { in.Withdrawals[0].DestinationHash = "ff" }, "missing 0x"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -238,17 +248,16 @@ func TestBuild_InvalidDepositAndWithdrawIdentity(t *testing.T) {
 		mutate     func(*batch.SettlementInputs)
 		wantSubstr string
 	}{
-		{"deposit id empty", func(in *batch.SettlementInputs) { in.Deposit.DepositID = "" }, "deposit.depositId is empty"},
-		{"deposit owner empty", func(in *batch.SettlementInputs) { in.Deposit.Owner = "" }, "deposit.owner is empty"},
-		{"deposit denom empty", func(in *batch.SettlementInputs) { in.Deposit.Denom = ""; in.Withdraw.Denom = "" }, "deposit.denom is empty"},
-		{"deposit amount zero", func(in *batch.SettlementInputs) { in.Deposit.Amount = "0" }, "deposit.amount"},
-		{"deposit amount negative", func(in *batch.SettlementInputs) { in.Deposit.Amount = "-1" }, "deposit.amount"},
-		{"deposit amount junk", func(in *batch.SettlementInputs) { in.Deposit.Amount = "abc" }, "deposit.amount"},
-		{"withdraw id empty", func(in *batch.SettlementInputs) { in.Withdraw.WithdrawID = "" }, "withdraw.withdrawId is empty"},
-		{"withdraw owner empty", func(in *batch.SettlementInputs) { in.Withdraw.Owner = "" }, "withdraw.owner is empty"},
-		{"withdraw destination empty", func(in *batch.SettlementInputs) { in.Withdraw.Destination = "" }, "withdraw.destination is empty"},
-		{"withdraw amount zero", func(in *batch.SettlementInputs) { in.Withdraw.Amount = "0" }, "withdraw.amount"},
-		{"withdraw nonce junk", func(in *batch.SettlementInputs) { in.Withdraw.Nonce = "x" }, "withdraw.nonce"},
+		{"deposit id empty", func(in *batch.SettlementInputs) { in.Deposits[0].DepositID = "" }, "deposit.depositId is empty"},
+		{"deposit owner empty", func(in *batch.SettlementInputs) { in.Deposits[0].Owner = "" }, "deposit.owner is empty"},
+		{"deposit amount zero", func(in *batch.SettlementInputs) { in.Deposits[0].Amount = "0" }, "deposit.amount"},
+		{"deposit amount negative", func(in *batch.SettlementInputs) { in.Deposits[0].Amount = "-1" }, "deposit.amount"},
+		{"deposit amount junk", func(in *batch.SettlementInputs) { in.Deposits[0].Amount = "abc" }, "deposit.amount"},
+		{"withdraw id empty", func(in *batch.SettlementInputs) { in.Withdrawals[0].Request.WithdrawID = "" }, "withdraw.withdrawId is empty"},
+		{"withdraw owner empty", func(in *batch.SettlementInputs) { in.Withdrawals[0].Request.Owner = "" }, "withdraw.owner is empty"},
+		{"withdraw destination empty", func(in *batch.SettlementInputs) { in.Withdrawals[0].Request.Destination = "" }, "withdraw.destination is empty"},
+		{"withdraw amount zero", func(in *batch.SettlementInputs) { in.Withdrawals[0].Request.Amount = "0" }, "withdraw.amount"},
+		{"withdraw nonce junk", func(in *batch.SettlementInputs) { in.Withdrawals[0].Request.Nonce = "x" }, "withdraw.nonce"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -267,18 +276,18 @@ func TestBuild_InvalidDepositAndWithdrawIdentity(t *testing.T) {
 
 func TestBuild_NormalizesAmounts(t *testing.T) {
 	in := canonicalAlice(t)
-	in.Deposit.Amount = "0100"      // leading zero
-	in.Withdraw.Amount = "  40  "   // whitespace
+	in.Deposits[0].Amount = "0100"            // leading zero
+	in.Withdrawals[0].Request.Amount = "  40  " // whitespace
 
 	upd, err := batch.NewSettlementUpdateBuilder().Build(in)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if upd.DepositAmount != "100" {
-		t.Fatalf("DepositAmount must be canonical: want 100, got %s", upd.DepositAmount)
+	if upd.Deposits[0].Amount != "100" {
+		t.Fatalf("Deposits[0].Amount must be canonical: want 100, got %s", upd.Deposits[0].Amount)
 	}
-	if upd.WithdrawAmount != "40" {
-		t.Fatalf("WithdrawAmount must be canonical: want 40, got %s", upd.WithdrawAmount)
+	if upd.Withdrawals[0].Amount != "40" {
+		t.Fatalf("Withdrawals[0].Amount must be canonical: want 40, got %s", upd.Withdrawals[0].Amount)
 	}
 }
 
@@ -316,9 +325,8 @@ func TestBuild_ConcurrentBuildsAssignDistinctBatchIDs(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			in := canonicalAlice(t)
-			// Differentiate inputs so the no-op guard does not pre-empt.
 			in.NewStateRoot = "0x" + strings.Repeat("c", 60) + lpad(i+1)
-			in.Nullifier = "0x" + strings.Repeat("d", 60) + lpad(i+1)
+			in.Withdrawals[0].Nullifier = "0x" + strings.Repeat("d", 60) + lpad(i+1)
 			upd, err := b.Build(in)
 			if err != nil {
 				t.Errorf("goroutine %d Build: %v", i, err)
@@ -346,20 +354,27 @@ func TestBuild_ConcurrentBuildsAssignDistinctBatchIDs(t *testing.T) {
 }
 
 func TestBuild_OutputMatchesAgreementSchema(t *testing.T) {
-	// Ensures every field documented in the Agreements tab for
-	// SettlementUpdate is populated. This is the canary that fires if
-	// pkg/types.SettlementUpdate adds a new field but Build forgets to
-	// fill it.
+	// Canary kiểm tra mọi field trong Agreements schema cho
+	// SettlementUpdate đều được populate. Nếu pkg/types thêm field
+	// mới mà Build quên fill, test này phải đỏ.
 	upd, err := batch.NewSettlementUpdateBuilder().Build(canonicalAlice(t))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if upd.BatchID == "" || upd.OldStateRoot == "" || upd.NewStateRoot == "" ||
-		upd.DepositID == "" || upd.DepositAmount == "" ||
-		upd.WithdrawID == "" || upd.WithdrawAmount == "" ||
-		upd.WithdrawAddress == "" || upd.WithdrawAddressHash == "" ||
-		upd.Nullifier == "" {
-		t.Fatalf("SettlementUpdate has empty field(s): %+v", upd)
+	if upd.BatchID == "" || upd.OldStateRoot == "" || upd.NewStateRoot == "" {
+		t.Fatalf("SettlementUpdate có root/id rỗng: %+v", upd)
+	}
+	if len(upd.Deposits) == 0 || len(upd.Withdrawals) == 0 {
+		t.Fatalf("SettlementUpdate phải có ít nhất 1 deposit + 1 withdrawal cho Alice vector")
+	}
+	d := upd.Deposits[0]
+	if d.DepositID == "" || d.Owner == "" || d.Denom == "" || d.Amount == "" {
+		t.Fatalf("Deposits[0] có field rỗng: %+v", d)
+	}
+	w := upd.Withdrawals[0]
+	if w.WithdrawID == "" || w.Owner == "" || w.Denom == "" || w.Amount == "" ||
+		w.Destination == "" || w.DestinationHash == "" || w.Nullifier == "" {
+		t.Fatalf("Withdrawals[0] có field rỗng: %+v", w)
 	}
 }
 

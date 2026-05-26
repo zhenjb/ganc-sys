@@ -10,156 +10,197 @@ import (
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
 
-// ErrInvalidWitnessInputs is the sentinel returned whenever the fields
-// of WitnessInputs are missing, malformed, or mutually inconsistent.
-// Callers chain with errors.Is.
-//
-// As with ErrInvalidSettlementInputs, a single sentinel keeps the
-// P4 surface area trivial (HTTP 400 with the underlying message).
+// ErrInvalidWitnessInputs là sentinel cho mọi lỗi validation bên trong
+// WitnessBuilder. Callers chain bằng errors.Is.
 var ErrInvalidWitnessInputs = errors.New("batch: invalid witness inputs")
 
-// WitnessInputs is the read-only bundle the off-chain caller hands to
-// WitnessBuilder. It deliberately reuses SettlementInputs (the bundle
-// STATE-08 already validated) so the witness and the SettlementUpdate
-// cannot drift in production — they are built from the exact same
-// source of truth in one orchestration step.
+// AccountWitnessSecret là phần secret + balance snapshot mà caller
+// (P3 orchestrator) cung cấp cho mỗi account tham gia batch. Mọi tham
+// chiếu tới deposit/withdraw amount của account đó sẽ được builder TỰ
+// derive từ SettlementInputs (đã được STATE-08 validate), không cho
+// caller truyền lại để tránh drift.
 //
-// Extra fields beyond SettlementInputs:
-//
-//   - UserSecret: opaque bytes the wallet/P3 owns. The nullifier is
-//     bound to (userSecret, withdraw.nonce); leaking the secret would
-//     let an attacker forge nullifiers. This field MUST NOT escape
-//     into any artifact P3 publishes (SettlementUpdate, public inputs,
-//     batch metadata) — only into witness.json which stays on the
-//     prover host.
-//
-//   - OldBalance: account balance for
-//     (Settlement.Withdraw.Owner, Settlement.Withdraw.Denom) BEFORE
-//     the batch's deposit-then-withdraw is applied to LocalState. For
-//     the canonical Alice 100/40 vector, this is "0".
-//
-//   - NewBalance: same account balance AFTER the batch. For Alice
-//     100/40, this is "60".
-//
-//   - StatePath: optional merkle-style witness path. ZK-06 uses a
-//     simplified state model in the MVP, so this slot is nil/empty
-//     until ZK-02 locks the final commitment scheme.
-type WitnessInputs struct {
+//   - Owner:      bech32 address (hoặc opaque id) của account. PHẢI trùng
+//                 với owner xuất hiện ở Deposit/Withdraw trong settlement.
+//   - UserSecret: opaque bytes ví/P3 sở hữu. Bind vào nullifier qua
+//                 state.NullifierFor(secret, nonce). KHÔNG bao giờ
+//                 escape ra ngoài witness file.
+//   - OldBalance: balance của (Owner, Denom) TRƯỚC khi batch apply.
+//   - NewBalance: balance của (Owner, Denom) SAU khi batch apply.
+type AccountWitnessSecret struct {
+	Owner      string
 	UserSecret string
-	Settlement SettlementInputs
 	OldBalance string
 	NewBalance string
+}
+
+// WitnessInputs là batch-shaped input của WitnessBuilder. Tái sử dụng
+// SettlementInputs đã được STATE-08 validate (cùng nguồn truth) — và
+// thêm mảng AccountWitnessSecret cho từng account tham gia batch.
+//
+// Builder enforce một invariant quan trọng: với mỗi entry trong
+// Accounts, phải tồn tại ÍT NHẤT một deposit hoặc withdrawal trong
+// Settlement có cùng Owner — account không-liên-quan tới batch sẽ bị
+// reject.
+type WitnessInputs struct {
+	Settlement SettlementInputs
+	Accounts   []AccountWitnessSecret
 	StatePath  []string
 }
 
-// WitnessBuilder produces canonical Witness records consumed by the
-// P2 prover (ZK-09). It has no mutable state — concurrent calls are
-// safe — because the witness is pure data and there is no monotonic
-// counter to maintain (the BatchID lives on the SettlementUpdate
-// side).
+// WitnessBuilder sản xuất Witness canonical cho P2 prover (ZK-09).
+// Stateless — concurrent calls an toàn.
 type WitnessBuilder struct{}
 
 func NewWitnessBuilder() *WitnessBuilder { return &WitnessBuilder{} }
 
-// Build validates WitnessInputs and assembles a canonical Witness.
+// Build validate WitnessInputs và assemble một Witness canonical.
 //
-// Validation pipeline (any failure returns ErrInvalidWitnessInputs
-// wrapped with a human-readable cause; no partial output on failure):
+// Validation pipeline cho mỗi account (failure → ErrInvalidWitnessInputs
+// wrap với cause; không partial output):
 //
-//  1. UserSecret non-empty after trim.
-//  2. Settlement.Withdraw.Nonce parses as a non-negative integer.
-//  3. OldBalance / NewBalance parse as non-negative integers.
-//  4. Settlement.Deposit.Amount / Settlement.Withdraw.Amount parse as
-//     positive integers (mirrors the SettlementUpdateBuilder gate; if
-//     STATE-08 passed already, this is belt-and-braces).
-//  5. Settlement.Deposit.Denom == Settlement.Withdraw.Denom. Mixed
-//     denom would make the ZK-04 balance constraint meaningless.
-//  6. ZK-04 balance constraint:
-//     newBalance + withdrawAmount == oldBalance + depositAmount
-//     A drift between LocalState's actual transition and the witness
-//     surfaces here (e.g. caller debited withdrawAmount twice, or
-//     forgot to credit the deposit) before the prover spends cycles.
-//  7. ZK-05 nullifier constraint (defense-in-depth):
-//     state.NullifierFor(userSecret, withdraw.Nonce) == Settlement.Nullifier
-//     Re-derives using the same domain tag the circuit will enforce.
-//     If the caller passed a stale or wrong (secret, nonce) pair, the
-//     resulting proof would be invalid — fail fast here, save a
-//     prover round-trip.
+//  1. Owner non-empty; phải có ít nhất 1 deposit hoặc 1 withdrawal trong
+//     Settlement với cùng Owner (account không liên quan tới batch bị
+//     reject).
+//  2. UserSecret non-empty (sau trim).
+//  3. OldBalance / NewBalance parse non-negative int.
+//  4. Tính sum(deposits của Owner).amount và sum(withdrawals của
+//     Owner).amount, sau đó assert ZK-04:
+//        newBalance + sumWithdraw == oldBalance + sumDeposit
+//  5. Với MỖI withdrawal của Owner trong settlement: re-derive
+//     state.NullifierFor(secret, request.Nonce) và assert bằng
+//     Nullifier mà settlement entry đang mang. Stale (secret, nonce)
+//     bị bắt ngay tại đây — tiết kiệm prover round-trip.
+//
+// Nonce ghi vào WitnessAccount = nonce của withdrawal cuối cùng của
+// account đó trong batch (sau đó account.Nonce ở local state đã tăng tới
+// giá trị này). Trong canonical Alice vector, mỗi account chỉ có 1
+// withdrawal nên không có ambiguity.
 //
 // Post-conditions on success:
-//   - Returned Witness.Nonce / OldBalance / NewBalance are canonical
-//     big.Int strings ("01" → "1"). Matches STATE-06 nonce
-//     canonicalization.
-//   - UserSecret is preserved verbatim (opaque bytes; trimming would
-//     silently rewrite secret material).
-//   - StatePath is a defensive copy when non-empty; nil when caller
-//     supplied none — JSON `omitempty` matches the agreed schema.
-//
-// The function does NOT mutate Settlement or any field inside it.
+//   - OldBalance/NewBalance canonical big.Int strings ("01" → "1").
+//   - UserSecret giữ verbatim (sau khi trim outer whitespace).
+//   - StatePath defensive copy; nil khi caller không truyền (omitempty).
 func (b *WitnessBuilder) Build(in WitnessInputs) (types.Witness, error) {
-	secret := strings.TrimSpace(in.UserSecret)
-	if secret == "" {
-		return types.Witness{}, fmt.Errorf("%w: userSecret is empty", ErrInvalidWitnessInputs)
+	if len(in.Accounts) == 0 {
+		return types.Witness{}, fmt.Errorf("%w: accounts is empty", ErrInvalidWitnessInputs)
 	}
 
-	nonce, err := parseNonNegative(in.Settlement.Withdraw.Nonce)
-	if err != nil {
-		return types.Witness{}, fmt.Errorf("%w: withdraw.nonce %q invalid: %v",
-			ErrInvalidWitnessInputs, in.Settlement.Withdraw.Nonce, err)
-	}
-	oldBal, err := parseNonNegative(in.OldBalance)
-	if err != nil {
-		return types.Witness{}, fmt.Errorf("%w: oldBalance %q invalid: %v",
-			ErrInvalidWitnessInputs, in.OldBalance, err)
-	}
-	newBal, err := parseNonNegative(in.NewBalance)
-	if err != nil {
-		return types.Witness{}, fmt.Errorf("%w: newBalance %q invalid: %v",
-			ErrInvalidWitnessInputs, in.NewBalance, err)
-	}
-	depAmt, err := parsePositive(in.Settlement.Deposit.Amount)
-	if err != nil {
-		return types.Witness{}, fmt.Errorf("%w: deposit.amount %q invalid: %v",
-			ErrInvalidWitnessInputs, in.Settlement.Deposit.Amount, err)
-	}
-	wdAmt, err := parsePositive(in.Settlement.Withdraw.Amount)
-	if err != nil {
-		return types.Witness{}, fmt.Errorf("%w: withdraw.amount %q invalid: %v",
-			ErrInvalidWitnessInputs, in.Settlement.Withdraw.Amount, err)
-	}
+	out := make([]types.WitnessAccount, 0, len(in.Accounts))
+	for i, acc := range in.Accounts {
+		owner := strings.TrimSpace(acc.Owner)
+		if owner == "" {
+			return types.Witness{}, fmt.Errorf("%w: accounts[%d].owner is empty", ErrInvalidWitnessInputs, i)
+		}
+		secret := strings.TrimSpace(acc.UserSecret)
+		if secret == "" {
+			return types.Witness{}, fmt.Errorf("%w: accounts[%d].userSecret is empty", ErrInvalidWitnessInputs, i)
+		}
+		oldBal, err := parseNonNegative(acc.OldBalance)
+		if err != nil {
+			return types.Witness{}, fmt.Errorf("%w: accounts[%d].oldBalance %q invalid: %v",
+				ErrInvalidWitnessInputs, i, acc.OldBalance, err)
+		}
+		newBal, err := parseNonNegative(acc.NewBalance)
+		if err != nil {
+			return types.Witness{}, fmt.Errorf("%w: accounts[%d].newBalance %q invalid: %v",
+				ErrInvalidWitnessInputs, i, acc.NewBalance, err)
+		}
 
-	if in.Settlement.Deposit.Denom != in.Settlement.Withdraw.Denom {
-		return types.Witness{}, fmt.Errorf(
-			"%w: deposit.denom=%q != withdraw.denom=%q (mixed-denom witness not supported in MVP)",
-			ErrInvalidWitnessInputs, in.Settlement.Deposit.Denom, in.Settlement.Withdraw.Denom,
-		)
-	}
+		sumDeposit := new(big.Int)
+		for _, d := range in.Settlement.Deposits {
+			if d.Owner != owner {
+				continue
+			}
+			amt, err := parsePositive(d.Amount)
+			if err != nil {
+				return types.Witness{}, fmt.Errorf("%w: accounts[%d] deposit %q amount %q invalid: %v",
+					ErrInvalidWitnessInputs, i, d.DepositID, d.Amount, err)
+			}
+			sumDeposit.Add(sumDeposit, amt)
+		}
 
-	// ZK-04: newBalance + withdrawAmount == oldBalance + depositAmount
-	lhs := new(big.Int).Add(newBal, wdAmt)
-	rhs := new(big.Int).Add(oldBal, depAmt)
-	if lhs.Cmp(rhs) != 0 {
-		return types.Witness{}, fmt.Errorf(
-			"%w: balance transition violated (ZK-04): newBalance(%s)+withdrawAmount(%s)=%s != oldBalance(%s)+depositAmount(%s)=%s",
-			ErrInvalidWitnessInputs,
-			newBal.String(), wdAmt.String(), lhs.String(),
-			oldBal.String(), depAmt.String(), rhs.String(),
-		)
-	}
+		sumWithdraw := new(big.Int)
+		var lastNonce string
+		var ownerWithdrawals []WithdrawalInput
+		for _, w := range in.Settlement.Withdrawals {
+			if w.Request.Owner != owner {
+				continue
+			}
+			amt, err := parsePositive(w.Request.Amount)
+			if err != nil {
+				return types.Witness{}, fmt.Errorf("%w: accounts[%d] withdraw %q amount %q invalid: %v",
+					ErrInvalidWitnessInputs, i, w.Request.WithdrawID, w.Request.Amount, err)
+			}
+			sumWithdraw.Add(sumWithdraw, amt)
+			lastNonce = w.Request.Nonce
+			ownerWithdrawals = append(ownerWithdrawals, w)
+		}
 
-	// ZK-05: nullifier == Hash(domain | userSecret | canonical(nonce))
-	rederived, err := state.NullifierFor(secret, nonce.String())
-	if err != nil {
-		return types.Witness{}, fmt.Errorf(
-			"%w: cannot re-derive nullifier: %v",
-			ErrInvalidWitnessInputs, err,
-		)
-	}
-	if rederived != in.Settlement.Nullifier {
-		return types.Witness{}, fmt.Errorf(
-			"%w: nullifier mismatch (ZK-05): supplied=%s, re-derived(userSecret, nonce=%s)=%s",
-			ErrInvalidWitnessInputs, in.Settlement.Nullifier, nonce.String(), rederived,
-		)
+		if sumDeposit.Sign() == 0 && sumWithdraw.Sign() == 0 {
+			return types.Witness{}, fmt.Errorf(
+				"%w: accounts[%d] owner %q has no deposit or withdrawal in settlement",
+				ErrInvalidWitnessInputs, i, owner,
+			)
+		}
+
+		// ZK-04: newBalance + sumWithdraw == oldBalance + sumDeposit
+		lhs := new(big.Int).Add(newBal, sumWithdraw)
+		rhs := new(big.Int).Add(oldBal, sumDeposit)
+		if lhs.Cmp(rhs) != 0 {
+			return types.Witness{}, fmt.Errorf(
+				"%w: accounts[%d] balance transition violated (ZK-04): newBalance(%s)+sumWithdraw(%s)=%s != oldBalance(%s)+sumDeposit(%s)=%s",
+				ErrInvalidWitnessInputs, i,
+				newBal.String(), sumWithdraw.String(), lhs.String(),
+				oldBal.String(), sumDeposit.String(), rhs.String(),
+			)
+		}
+
+		// ZK-05: với từng withdrawal của account, re-derive nullifier
+		// và assert khớp với nullifier settlement entry đang mang.
+		for _, w := range ownerWithdrawals {
+			nonce, err := parseNonNegative(w.Request.Nonce)
+			if err != nil {
+				return types.Witness{}, fmt.Errorf(
+					"%w: accounts[%d] withdraw %q nonce %q invalid: %v",
+					ErrInvalidWitnessInputs, i, w.Request.WithdrawID, w.Request.Nonce, err,
+				)
+			}
+			rederived, err := state.NullifierFor(secret, nonce.String())
+			if err != nil {
+				return types.Witness{}, fmt.Errorf(
+					"%w: accounts[%d] cannot re-derive nullifier for withdraw %q: %v",
+					ErrInvalidWitnessInputs, i, w.Request.WithdrawID, err,
+				)
+			}
+			if rederived != w.Nullifier {
+				return types.Witness{}, fmt.Errorf(
+					"%w: accounts[%d] nullifier mismatch (ZK-05) for withdraw %q: supplied=%s, re-derived(userSecret, nonce=%s)=%s",
+					ErrInvalidWitnessInputs, i, w.Request.WithdrawID, w.Nullifier, nonce.String(), rederived,
+				)
+			}
+		}
+
+		// Nonce field on the witness = nonce post-last-withdraw. Nếu
+		// account chỉ có deposit (không withdraw), giữ "0" như local
+		// state.NewAccount default.
+		nonceField := "0"
+		if lastNonce != "" {
+			n, err := parseNonNegative(lastNonce)
+			if err != nil {
+				return types.Witness{}, fmt.Errorf("%w: accounts[%d] nonce normalization failed: %v",
+					ErrInvalidWitnessInputs, i, err)
+			}
+			nonceField = n.String()
+		}
+
+		out = append(out, types.WitnessAccount{
+			Owner:      owner,
+			UserSecret: secret,
+			Nonce:      nonceField,
+			OldBalance: oldBal.String(),
+			NewBalance: newBal.String(),
+		})
 	}
 
 	var statePath []string
@@ -168,10 +209,7 @@ func (b *WitnessBuilder) Build(in WitnessInputs) (types.Witness, error) {
 	}
 
 	return types.Witness{
-		UserSecret: secret,
-		Nonce:      nonce.String(),
-		OldBalance: oldBal.String(),
-		NewBalance: newBal.String(),
-		StatePath:  statePath,
+		Accounts:  out,
+		StatePath: statePath,
 	}, nil
 }

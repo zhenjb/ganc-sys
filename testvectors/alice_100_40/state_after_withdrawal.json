@@ -8,5 +8,5 @@
       "nonce": "1"
     }
   ],
-  "note": "STATE-05 — after applying wd-1, Alice balance=60, nonce=1. rootC. Nullifier is a placeholder until STATE-06/ZK-02 locks the hash scheme."
+  "note": "STATE-05 — after applying wd-1, Alice balance=60, nonce=1. rootC."
 }

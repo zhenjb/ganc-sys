@@ -13,65 +13,54 @@ import (
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
 
-// ErrInvalidSettlementInputs is the sentinel returned whenever the
-// fields of SettlementInputs are missing, malformed, or mutually
-// inconsistent. Callers chain with errors.Is.
-//
-// We intentionally use a single sentinel for the whole builder so P4
-// (which exposes Build over /api/batch/build) can map any failure to
-// HTTP 400 with the underlying message as the body, instead of having
-// to enumerate ten different error types per validation rule.
+// ErrInvalidSettlementInputs là sentinel cho mọi lỗi validation bên
+// trong SettlementUpdateBuilder. Callers chain bằng errors.Is. Một
+// sentinel duy nhất giúp P4 (khi map qua /api/batch/build) chỉ cần một
+// nhánh xử lý → trả HTTP 400 với message gốc.
 var ErrInvalidSettlementInputs = errors.New("batch: invalid settlement inputs")
 
-// SettlementInputs is the read-only bundle the off-chain caller hands
-// to the builder. Every field is something STATE-01..07 has already
-// produced for the canonical Alice 100/40 vector:
+// WithdrawalInput gói một WithdrawRequest cùng với hai trường derived bắt
+// buộc cho batch-shaped settlement:
 //
-//   - OldStateRoot:        LocalState.Root() snapshot BEFORE ApplyWithdrawal
-//                          (e.g. rootB — the post-deposit / pre-withdraw root).
-//   - NewStateRoot:        LocalState.Root() snapshot AFTER  ApplyWithdrawal
-//                          (e.g. rootC — what the on-chain currentStateRoot
-//                          will advance to once MsgSubmitBatchProof is
-//                          accepted).
-//   - Deposit:             the on-chain DepositRecord (STATE-03 source).
-//                          Owner/Denom/Amount must match what STATE-03 used
-//                          to credit LocalState.
-//   - Withdraw:            the WithdrawRequest produced by STATE-04
-//                          (WithdrawRequestBuilder).
-//   - Nullifier:           value returned by state.NullifierFor in STATE-06.
-//                          Caller already passed this to ApplyWithdrawal so
-//                          re-using it here is byte-identical.
-//   - WithdrawAddressHash: value returned by state.WithdrawAddressHash in
-//                          STATE-07. The builder re-derives it from
-//                          Withdraw.Destination and rejects if mismatched —
-//                          defense-in-depth, see Build() doc.
-//
-// The struct is by-value because the builder must not mutate anything
-// the caller still owns; the resulting SettlementUpdate is the only
-// shared artifact.
-type SettlementInputs struct {
-	OldStateRoot        string
-	NewStateRoot        string
-	Deposit             types.DepositRecord
-	Withdraw            types.WithdrawRequest
-	Nullifier           string
-	WithdrawAddressHash string
+//   - Nullifier: do state.NullifierFor(secret, request.Nonce) sinh ra
+//     ở STATE-06. Phải truyền lại ở đây để builder ghi vào withdrawal
+//     entry và để re-derive của witness builder bind đúng.
+//   - DestinationHash: do state.WithdrawAddressHash(request.Destination)
+//     sinh ra ở STATE-07. Builder sẽ re-derive lại từ request.Destination
+//     và reject nếu mismatch — defense-in-depth chống tampering.
+type WithdrawalInput struct {
+	Request         types.WithdrawRequest
+	Nullifier       string
+	DestinationHash string
 }
 
-// SettlementUpdateBuilder produces deterministic, sequentially-numbered
-// SettlementUpdate records.
+// SettlementInputs là batch-shaped input của SettlementUpdateBuilder.
+// Theo Agreements, schema không bao giờ rớt về scalar — kể cả khi
+// canonical Alice vector chỉ có 1 deposit + 1 withdrawal, mảng vẫn giữ
+// nguyên dạng slice để contract đúng từ ngày đầu.
 //
-// This is STATE-08 of the P3 pipeline. The builder is the only place
-// that assigns BatchID; everything else (roots, ids, amounts, hashes,
-// address) is passed in by the caller after STATE-03..07 has produced
-// it. Keeping batch-id sequencing here means the on-chain side and the
-// off-chain side share a single source of monotonicity per process.
+//   - OldStateRoot: LocalState.Root() trước khi apply mọi withdrawal
+//                   trong batch.
+//   - NewStateRoot: LocalState.Root() sau khi apply toàn bộ batch.
+//   - Deposits:     các DepositRecord (STATE-03) tham gia batch. Owner/
+//                   Denom/Amount phải khớp với những gì STATE-03 dùng
+//                   để credit LocalState.
+//   - Withdrawals:  các WithdrawRequest (STATE-04) tham gia batch,
+//                   kèm Nullifier (STATE-06) và DestinationHash (STATE-07).
+type SettlementInputs struct {
+	OldStateRoot string
+	NewStateRoot string
+	Deposits     []types.DepositRecord
+	Withdrawals  []WithdrawalInput
+}
+
+// SettlementUpdateBuilder sản xuất SettlementUpdate deterministic,
+// đánh số tuần tự — đây là STATE-08 của pipeline P3. Builder là nơi DUY
+// NHẤT mint BatchID; mọi giá trị khác (roots, ids, amounts, hashes,
+// destination) do caller cung cấp sau khi STATE-03..07 đã tính.
 //
-// Concurrency: Build is goroutine-safe; the only mutable state is the
-// seq counter, guarded by mu. The builder holds no reference to
-// LocalState so multiple LocalState mirrors (e.g. one per chain in a
-// multi-chain future) can share a builder if desired — though current
-// MVP runs a single mirror.
+// Concurrency: Build thread-safe; chỉ có seq counter mutable, được bảo
+// vệ bằng mu. Builder không giữ tham chiếu tới LocalState.
 type SettlementUpdateBuilder struct {
 	mu  sync.Mutex
 	seq uint64
@@ -81,53 +70,33 @@ func NewSettlementUpdateBuilder() *SettlementUpdateBuilder {
 	return &SettlementUpdateBuilder{}
 }
 
-// Seq returns the number of SettlementUpdate records built so far
-// (testing/debug; not part of the STATE-08 contract).
+// Seq trả về số lượng SettlementUpdate đã build (debug/testing).
 func (b *SettlementUpdateBuilder) Seq() uint64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.seq
 }
 
-// Build validates SettlementInputs and assembles a canonical
-// SettlementUpdate.
+// Build validate SettlementInputs và assemble một SettlementUpdate
+// canonical.
 //
-// Validation pipeline (any failure returns ErrInvalidSettlementInputs
-// wrapped with a human-readable cause; no partial mutation of state):
+// Validation pipeline (mọi failure → ErrInvalidSettlementInputs wrap
+// với cause; không partial mutation):
 //
-//  1. Roots are non-empty, hex-prefixed (0x...), and strictly different.
-//     A no-op batch (oldRoot == newRoot) would still consume a batchId
-//     and a deposit/nullifier; reject early.
-//  2. DepositRecord identity fields (depositId, owner, denom) non-empty
-//     and Amount is a positive integer string.
-//  3. WithdrawRequest identity fields (withdrawId, owner, denom,
-//     destination) non-empty and Amount is a positive integer string,
-//     Nonce is a non-negative integer string.
-//  4. Nullifier is non-empty and hex-prefixed.
-//  5. WithdrawAddressHash is non-empty and hex-prefixed.
-//  6. Deposit.Denom == Withdraw.Denom. MVP batches one deposit + one
-//     withdraw of the same denom; the circuit (ZK-04) is written for
-//     that shape. Mixed-denom batches are future work.
-//  7. Re-derive WithdrawAddressHash from Withdraw.Destination via
-//     state.WithdrawAddressHash and assert equality with the supplied
-//     hash. This catches the exact tampering scenario the STATE-07
-//     changenote calls out: if the off-chain pipeline drifts
-//     destination and hash, the prover would build a proof that is
-//     valid against a different address than the chain expects.
-//     Failing here saves a prover round-trip.
+//  1. Roots non-empty, hex-prefixed (0x...), strictly khác nhau.
+//  2. Có ÍT NHẤT 1 deposit hoặc 1 withdrawal (batch rỗng bị reject).
+//  3. Mỗi deposit: identity fields non-empty, Amount > 0.
+//  4. Mỗi withdrawal: identity fields non-empty, Amount > 0, Nonce >= 0;
+//     Nullifier và DestinationHash non-empty + hex-prefixed.
+//  5. Single-denom invariant: mọi deposit & withdrawal cùng denom
+//     (MVP — circuit ZK-04 được viết cho shape này).
+//  6. Re-derive DestinationHash từ Withdraw.Destination qua
+//     state.WithdrawAddressHash và assert equality với supplied hash.
 //
 // Post-conditions on success:
-//   - Returned SettlementUpdate has BatchID = "batch-N" where N is the
-//     post-increment seq counter (first batch is "batch-1").
-//   - All amount fields are normalized through big.Int (so "01" and
-//     "1" produce identical bytes downstream — same canonicalization
-//     STATE-06 NullifierFor applies to nonce).
-//   - Owner/denom/destination preserved verbatim from the input
-//     records (those were already trimmed by STATE-03/STATE-04
-//     respectively; trimming again here would be a silent rewrite).
-//
-// The function is the sole place BatchID is minted; no other path in
-// the P3 codebase should assign batch ids.
+//   - BatchID = "batch-N" với N là post-increment seq counter.
+//   - Mọi amount normalize qua big.Int ("0100" → "100").
+//   - Owner/denom/destination giữ verbatim (đã trim ở STATE-03/04).
 func (b *SettlementUpdateBuilder) Build(in SettlementInputs) (types.SettlementUpdate, error) {
 	if err := validateRoot(in.OldStateRoot, "oldStateRoot"); err != nil {
 		return types.SettlementUpdate{}, err
@@ -139,41 +108,75 @@ func (b *SettlementUpdateBuilder) Build(in SettlementInputs) (types.SettlementUp
 		return types.SettlementUpdate{}, fmt.Errorf("%w: oldStateRoot == newStateRoot (no-op batch)", ErrInvalidSettlementInputs)
 	}
 
-	depAmt, err := validateDeposit(in.Deposit)
-	if err != nil {
-		return types.SettlementUpdate{}, err
+	if len(in.Deposits) == 0 && len(in.Withdrawals) == 0 {
+		return types.SettlementUpdate{}, fmt.Errorf("%w: empty batch (no deposits, no withdrawals)", ErrInvalidSettlementInputs)
 	}
-	wdAmt, err := validateWithdraw(in.Withdraw)
+
+	denom, err := pickBatchDenom(in)
 	if err != nil {
 		return types.SettlementUpdate{}, err
 	}
 
-	if err := validateHex(in.Nullifier, "nullifier"); err != nil {
-		return types.SettlementUpdate{}, err
-	}
-	if err := validateHex(in.WithdrawAddressHash, "withdrawAddressHash"); err != nil {
-		return types.SettlementUpdate{}, err
+	deposits := make([]types.SettlementDeposit, 0, len(in.Deposits))
+	for i, d := range in.Deposits {
+		amt, err := validateDeposit(d)
+		if err != nil {
+			return types.SettlementUpdate{}, fmt.Errorf("%w (deposits[%d])", err, i)
+		}
+		if d.Denom != denom {
+			return types.SettlementUpdate{}, fmt.Errorf(
+				"%w: deposits[%d].denom=%q != batch denom %q (mixed-denom batches not supported in MVP)",
+				ErrInvalidSettlementInputs, i, d.Denom, denom,
+			)
+		}
+		deposits = append(deposits, types.SettlementDeposit{
+			DepositID: d.DepositID,
+			Owner:     d.Owner,
+			Denom:     d.Denom,
+			Amount:    amt.String(),
+		})
 	}
 
-	if in.Deposit.Denom != in.Withdraw.Denom {
-		return types.SettlementUpdate{}, fmt.Errorf(
-			"%w: deposit.denom=%q != withdraw.denom=%q (mixed-denom batches not supported in MVP)",
-			ErrInvalidSettlementInputs, in.Deposit.Denom, in.Withdraw.Denom,
-		)
-	}
-
-	rederived, err := state.WithdrawAddressHash(in.Withdraw.Destination)
-	if err != nil {
-		return types.SettlementUpdate{}, fmt.Errorf(
-			"%w: cannot re-derive withdrawAddressHash from destination %q: %v",
-			ErrInvalidSettlementInputs, in.Withdraw.Destination, err,
-		)
-	}
-	if rederived != in.WithdrawAddressHash {
-		return types.SettlementUpdate{}, fmt.Errorf(
-			"%w: withdrawAddressHash mismatch: supplied=%s, re-derived(destination=%q)=%s",
-			ErrInvalidSettlementInputs, in.WithdrawAddressHash, in.Withdraw.Destination, rederived,
-		)
+	withdrawals := make([]types.SettlementWithdrawal, 0, len(in.Withdrawals))
+	for i, w := range in.Withdrawals {
+		amt, err := validateWithdraw(w.Request)
+		if err != nil {
+			return types.SettlementUpdate{}, fmt.Errorf("%w (withdrawals[%d])", err, i)
+		}
+		if w.Request.Denom != denom {
+			return types.SettlementUpdate{}, fmt.Errorf(
+				"%w: withdrawals[%d].denom=%q != batch denom %q (mixed-denom batches not supported in MVP)",
+				ErrInvalidSettlementInputs, i, w.Request.Denom, denom,
+			)
+		}
+		if err := validateHex(w.Nullifier, fmt.Sprintf("withdrawals[%d].nullifier", i)); err != nil {
+			return types.SettlementUpdate{}, err
+		}
+		if err := validateHex(w.DestinationHash, fmt.Sprintf("withdrawals[%d].destinationHash", i)); err != nil {
+			return types.SettlementUpdate{}, err
+		}
+		rederived, err := state.WithdrawAddressHash(w.Request.Destination)
+		if err != nil {
+			return types.SettlementUpdate{}, fmt.Errorf(
+				"%w: withdrawals[%d] cannot re-derive destinationHash from destination %q: %v",
+				ErrInvalidSettlementInputs, i, w.Request.Destination, err,
+			)
+		}
+		if rederived != w.DestinationHash {
+			return types.SettlementUpdate{}, fmt.Errorf(
+				"%w: withdrawals[%d].destinationHash mismatch: supplied=%s, re-derived(destination=%q)=%s",
+				ErrInvalidSettlementInputs, i, w.DestinationHash, w.Request.Destination, rederived,
+			)
+		}
+		withdrawals = append(withdrawals, types.SettlementWithdrawal{
+			WithdrawID:      w.Request.WithdrawID,
+			Owner:           w.Request.Owner,
+			Denom:           w.Request.Denom,
+			Amount:          amt.String(),
+			Destination:     w.Request.Destination,
+			DestinationHash: w.DestinationHash,
+			Nullifier:       w.Nullifier,
+		})
 	}
 
 	b.mu.Lock()
@@ -181,17 +184,29 @@ func (b *SettlementUpdateBuilder) Build(in SettlementInputs) (types.SettlementUp
 	b.seq++
 
 	return types.SettlementUpdate{
-		BatchID:             "batch-" + strconv.FormatUint(b.seq, 10),
-		OldStateRoot:        in.OldStateRoot,
-		NewStateRoot:        in.NewStateRoot,
-		DepositID:           in.Deposit.DepositID,
-		DepositAmount:       depAmt.String(),
-		WithdrawID:          in.Withdraw.WithdrawID,
-		WithdrawAmount:      wdAmt.String(),
-		WithdrawAddress:     in.Withdraw.Destination,
-		WithdrawAddressHash: in.WithdrawAddressHash,
-		Nullifier:           in.Nullifier,
+		BatchID:      "batch-" + strconv.FormatUint(b.seq, 10),
+		OldStateRoot: in.OldStateRoot,
+		NewStateRoot: in.NewStateRoot,
+		Deposits:     deposits,
+		Withdrawals:  withdrawals,
 	}, nil
+}
+
+// pickBatchDenom enforces single-denom invariant ngay từ entry đầu tiên.
+// Trả về denom chuẩn cho cả batch để các vòng validate sau so sánh.
+func pickBatchDenom(in SettlementInputs) (string, error) {
+	if len(in.Deposits) > 0 {
+		d := strings.TrimSpace(in.Deposits[0].Denom)
+		if d == "" {
+			return "", fmt.Errorf("%w: deposits[0].denom is empty", ErrInvalidSettlementInputs)
+		}
+		return d, nil
+	}
+	w := strings.TrimSpace(in.Withdrawals[0].Request.Denom)
+	if w == "" {
+		return "", fmt.Errorf("%w: withdrawals[0].denom is empty", ErrInvalidSettlementInputs)
+	}
+	return w, nil
 }
 
 func validateRoot(root, label string) error {

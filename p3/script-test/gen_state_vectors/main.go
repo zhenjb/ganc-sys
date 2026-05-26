@@ -1,12 +1,14 @@
-// gen_state_vectors materializes the canonical Alice 100/40 vectors under
-// testvectors/alice_100_40/ for P3 STATE-02..STATE-09.
+// gen_state_vectors materializes canonical Alice 100/40 vectors dưới
+// testvectors/alice_100_40/ cho P3 STATE-02..STATE-09 — phiên bản
+// batch-shaped tuân theo Agreements (deposits[], withdrawals[], thêm
+// batch_commitments_batch_1.json).
 //
-// It is run from the repo root:
+// Chạy từ repo root:
 //
 //	go run ./p3/script-test/gen_state_vectors
 //
-// The output files are checked in so other roles (P2 prover, P1 verifier,
-// P4 backend) can consume them without re-running this program.
+// Output files được check-in để P2 prover, P1 verifier, P4 backend
+// consume mà không phải re-run program.
 package main
 
 import (
@@ -24,16 +26,16 @@ import (
 )
 
 const (
-	outDir       = "testvectors/alice_100_40"
-	aliceAddr    = "cosmos1alice"
-	denom        = "uusdc"
-	aliceSecret  = "alice_secret"
+	outDir      = "testvectors/alice_100_40"
+	aliceAddr   = "cosmos1alice"
+	denom       = "uusdc"
+	aliceSecret = "alice_secret"
 )
 
 type stateSnapshot struct {
-	Root     string           `json:"root"`
-	Accounts []types.Account  `json:"accounts"`
-	Note     string           `json:"note,omitempty"`
+	Root     string          `json:"root"`
+	Accounts []types.Account `json:"accounts"`
+	Note     string          `json:"note,omitempty"`
 }
 
 type nullifierVector struct {
@@ -47,13 +49,28 @@ type nullifierVector struct {
 	Note          string `json:"note,omitempty"`
 }
 
-type withdrawAddressHashVector struct {
-	WithdrawID          string `json:"withdrawId"`
-	Destination         string `json:"destination"`
-	DomainTag           string `json:"domainTag"`
-	HashAlgorithm       string `json:"hashAlgorithm"`
-	WithdrawAddressHash string `json:"withdrawAddressHash"`
-	Note                string `json:"note,omitempty"`
+// destinationHashVector dùng tên trường Agreements (destination /
+// destinationHash) thay vì withdrawAddress / withdrawAddressHash.
+type destinationHashVector struct {
+	WithdrawID      string `json:"withdrawId"`
+	Destination     string `json:"destination"`
+	DomainTag       string `json:"domainTag"`
+	HashAlgorithm   string `json:"hashAlgorithm"`
+	DestinationHash string `json:"destinationHash"`
+	Note            string `json:"note,omitempty"`
+}
+
+// batchCommitmentsVector wrap BatchCommitments + meta để debug/dependent
+// roles biết domain tags đã được dùng.
+type batchCommitmentsVector struct {
+	BatchID          string                 `json:"batchId"`
+	Commitments      types.BatchCommitments `json:"commitments"`
+	DepositsTag      string                 `json:"depositsDomainTag"`
+	WithdrawalsTag   string                 `json:"withdrawalsDomainTag"`
+	NullifiersTag    string                 `json:"nullifiersDomainTag"`
+	WithdrawOutsTag  string                 `json:"withdrawOutputsDomainTag"`
+	HashAlgorithm    string                 `json:"hashAlgorithm"`
+	Note             string                 `json:"note,omitempty"`
 }
 
 func main() {
@@ -69,11 +86,8 @@ func main() {
 	}
 	write("initial_state.json", initial)
 
-	// STATE-09 needs oldBalance = balance BEFORE the batch applies.
-	// Captured here so subsequent ApplyDeposit / ApplyWithdrawal do not
-	// shadow it (Account() reads through the latest snapshot). For the
-	// canonical Alice vector this is "0" because no account entry
-	// exists yet — Account() returns the zero account.
+	// STATE-09 cần oldBalance = balance TRƯỚC khi batch apply. Capture
+	// ngay ở đây để ApplyDeposit / ApplyWithdrawal sau không che mất.
 	oldBalance := ls.Account(aliceAddr, denom).Balance
 
 	dep1 := types.DepositRecord{
@@ -98,9 +112,7 @@ func main() {
 	}
 	write("state_after_deposit.json", after)
 
-	// STATE-04 — build the canonical Alice withdraw request (40 uusdc).
-	// Builder reads (but does not mutate) the post-deposit local state, so the
-	// snapshot above (rootB, balance=100, nonce=0) is the input precondition.
+	// STATE-04 — build canonical Alice withdraw request (40 uusdc).
 	wb := state.NewWithdrawRequestBuilder(ls)
 	wdReq, err := wb.Build(state.WithdrawIntent{
 		Owner:       aliceAddr,
@@ -113,17 +125,13 @@ func main() {
 	}
 	write("withdraw_request_wd_1.json", wdReq)
 
-	// Re-snapshot to assert STATE-04 left the state unchanged.
+	// Re-snapshot để assert STATE-04 không mutate state.
 	postBuildRoot := ls.Root()
 	if postBuildRoot != newRoot {
 		die("STATE-04 mutated root: rootB=%s, after-build=%s", newRoot, postBuildRoot)
 	}
 
-	// STATE-06 — derive the canonical Alice nullifier.
-	// Same composition the circuit (ZK-05) will enforce:
-	// nullifier = H(domain | userSecret | nonce). The MVP uses
-	// SHA-256 as the placeholder hash; when ZK-02 locks the final
-	// scheme we bump the domain tag and re-run this generator.
+	// STATE-06 — derive canonical Alice nullifier.
 	nullifier, err := state.NullifierFor(aliceSecret, wdReq.Nonce)
 	if err != nil {
 		die("nullifier: %v", err)
@@ -136,30 +144,26 @@ func main() {
 		DomainTag:     state.NullifierDomainTag(),
 		HashAlgorithm: "sha256",
 		Nullifier:     nullifier,
-		Note:          "STATE-06 — nullifier(domain | userSecret | nonce). Placeholder hash until ZK-02 locks Poseidon/MiMC; bump domain tag then regenerate.",
+		Note:          "STATE-06 — nullifier(domain | userSecret | nonce). Placeholder hash until ZK-02 chốt Poseidon/MiMC; bump domain tag rồi regenerate.",
 	})
 
-	// STATE-07 — derive the canonical Alice withdraw-address hash.
-	// Same composition the circuit (ZK-07) will enforce:
-	// withdrawAddressHash = H(domain | canonical(destination)). The MVP
-	// uses SHA-256 as the placeholder hash; when ZK-02 locks the final
-	// scheme we bump the domain tag and re-run this generator.
-	addrHash, err := state.WithdrawAddressHash(wdReq.Destination)
+	// STATE-07 — derive canonical Alice destinationHash. Đặt tên file +
+	// field theo Agreements (destination / destinationHash). File legacy
+	// withdraw_address_hash_wd_1.json bị thay thế.
+	destinationHash, err := state.WithdrawAddressHash(wdReq.Destination)
 	if err != nil {
-		die("withdraw address hash: %v", err)
+		die("destination hash: %v", err)
 	}
-	write("withdraw_address_hash_wd_1.json", withdrawAddressHashVector{
-		WithdrawID:          wdReq.WithdrawID,
-		Destination:         wdReq.Destination,
-		DomainTag:           state.WithdrawAddressDomainTag(),
-		HashAlgorithm:       "sha256",
-		WithdrawAddressHash: addrHash,
-		Note:                "STATE-07 — withdrawAddressHash(domain | destination). Placeholder hash until ZK-02 locks Poseidon/MiMC; bump domain tag then regenerate.",
+	write("destination_hash_wd_1.json", destinationHashVector{
+		WithdrawID:      wdReq.WithdrawID,
+		Destination:     wdReq.Destination,
+		DomainTag:       state.WithdrawAddressDomainTag(),
+		HashAlgorithm:   "sha256",
+		DestinationHash: destinationHash,
+		Note:            "STATE-07 — destinationHash(domain | destination). Tên trường đã đồng bộ Agreements (destination / destinationHash).",
 	})
 
-	// STATE-05 — apply the canonical Alice withdrawal (40 uusdc).
-	// Capture oldRoot (== rootB) BEFORE the apply so STATE-08 has the
-	// pre-withdrawal snapshot to bind into the SettlementUpdate.
+	// STATE-05 — apply canonical Alice withdrawal (40 uusdc).
 	oldRoot := ls.Root()
 	rootC, err := ls.ApplyWithdrawal(wdReq, nullifier)
 	if err != nil {
@@ -168,23 +172,23 @@ func main() {
 	afterWithdraw := stateSnapshot{
 		Root:     rootC,
 		Accounts: ls.Snapshot(),
-		Note:     "STATE-05 — after applying wd-1, Alice balance=60, nonce=1. rootC. Nullifier is a placeholder until STATE-06/ZK-02 locks the hash scheme.",
+		Note:     "STATE-05 — after applying wd-1, Alice balance=60, nonce=1. rootC.",
 	}
 	write("state_after_withdrawal.json", afterWithdraw)
 
-	// STATE-08 — assemble the canonical SettlementUpdate. The builder
-	// re-derives withdrawAddressHash from req.Destination and rejects
-	// if it does not match `addrHash`, so any drift between STATE-07's
-	// canonical vector and what the prover/verifier will see is caught
-	// here, not at proof submission time.
+	// STATE-08 — assemble batch-shaped SettlementUpdate.
 	sub := batch.NewSettlementUpdateBuilder()
 	settlementInputs := batch.SettlementInputs{
-		OldStateRoot:        oldRoot,
-		NewStateRoot:        rootC,
-		Deposit:             dep1,
-		Withdraw:            wdReq,
-		Nullifier:           nullifier,
-		WithdrawAddressHash: addrHash,
+		OldStateRoot: oldRoot,
+		NewStateRoot: rootC,
+		Deposits:     []types.DepositRecord{dep1},
+		Withdrawals: []batch.WithdrawalInput{
+			{
+				Request:         wdReq,
+				Nullifier:       nullifier,
+				DestinationHash: destinationHash,
+			},
+		},
 	}
 	upd, err := sub.Build(settlementInputs)
 	if err != nil {
@@ -192,30 +196,40 @@ func main() {
 	}
 	write("settlement_update_batch_1.json", upd)
 
-	// STATE-09 — assemble the canonical Witness for the P2 prover.
-	// newBalance is the post-withdrawal balance Alice holds in the
-	// off-chain mirror; combined with oldBalance (captured before
-	// ApplyDeposit) and the batch amounts, the ZK-04 constraint
-	//   newBalance + withdrawAmount == oldBalance + depositAmount
-	// pins down the entire balance transition. The witness file is
-	// PRIVATE to the prover host; it must NEVER be checked in against
-	// a real user secret. The "alice_secret" string here is the demo
-	// secret only.
+	// STATE-08 (bổ sung) — compute BatchCommitments cho batch.
+	commitments := batch.BuildCommitments(upd)
+	depTag, wdTag, nfTag, woTag := batch.CommitmentDomainTags()
+	write("batch_commitments_batch_1.json", batchCommitmentsVector{
+		BatchID:         upd.BatchID,
+		Commitments:     commitments,
+		DepositsTag:     depTag,
+		WithdrawalsTag:  wdTag,
+		NullifiersTag:   nfTag,
+		WithdrawOutsTag: woTag,
+		HashAlgorithm:   "sha256",
+		Note:            "STATE-08 (extension) — 4 commitment root bind batch vào proof public inputs[2..5].",
+	})
+
+	// STATE-09 — assemble batch-shaped Witness.
 	newBalance := ls.Account(aliceAddr, denom).Balance
 	wbuilder := batch.NewWitnessBuilder()
 	witness, err := wbuilder.Build(batch.WitnessInputs{
-		UserSecret: aliceSecret,
 		Settlement: settlementInputs,
-		OldBalance: oldBalance,
-		NewBalance: newBalance,
+		Accounts: []batch.AccountWitnessSecret{
+			{
+				Owner:      aliceAddr,
+				UserSecret: aliceSecret,
+				OldBalance: oldBalance,
+				NewBalance: newBalance,
+			},
+		},
 	})
 	if err != nil {
 		die("build witness: %v", err)
 	}
 	write("witness_batch_1.json", witness)
 
-	// Sanity: post-condition required by the STATE-04 changenote — after
-	// STATE-05, account.Nonce must equal request.Nonce.
+	// Sanity: post-STATE-05 invariant.
 	acc := ls.Account(aliceAddr, denom)
 	if acc.Nonce != wdReq.Nonce {
 		die("post-STATE-05 invariant violated: account.Nonce=%s, request.Nonce=%s", acc.Nonce, wdReq.Nonce)
@@ -224,14 +238,32 @@ func main() {
 		die("post-STATE-05 balance: want 60, got %s", acc.Balance)
 	}
 
+	// Xoá vector legacy nếu còn (đổi tên withdraw_address_hash_*).
+	legacyHash := filepath.Join(outDir, "withdraw_address_hash_wd_1.json")
+	if err := os.Remove(legacyHash); err != nil && !os.IsNotExist(err) {
+		die("remove legacy %s: %v", legacyHash, err)
+	}
+
 	fmt.Println("rootA:", initial.Root)
 	fmt.Println("rootB:", newRoot)
 	fmt.Println("rootC:", rootC)
 	fmt.Println("withdrawRequest:", wdReq.WithdrawID, "nonce:", wdReq.Nonce)
 	fmt.Println("nullifier (placeholder):", nullifier)
-	fmt.Println("withdrawAddressHash (placeholder):", addrHash)
-	fmt.Println("settlementUpdate:", upd.BatchID, "oldRoot:", upd.OldStateRoot, "newRoot:", upd.NewStateRoot)
-	fmt.Println("witness: oldBalance:", witness.OldBalance, "newBalance:", witness.NewBalance, "nonce:", witness.Nonce)
+	fmt.Println("destinationHash (placeholder):", destinationHash)
+	fmt.Println("settlementUpdate:", upd.BatchID,
+		"deposits:", len(upd.Deposits), "withdrawals:", len(upd.Withdrawals))
+	fmt.Println("batchCommitments:",
+		"depositsRoot:", commitments.DepositsRoot,
+		"withdrawalsRoot:", commitments.WithdrawalsRoot,
+		"nullifiersRoot:", commitments.NullifiersRoot,
+		"withdrawOutputsRoot:", commitments.WithdrawOutputsRoot)
+	if len(witness.Accounts) > 0 {
+		fmt.Println("witness account[0]:",
+			"owner:", witness.Accounts[0].Owner,
+			"oldBalance:", witness.Accounts[0].OldBalance,
+			"newBalance:", witness.Accounts[0].NewBalance,
+			"nonce:", witness.Accounts[0].Nonce)
+	}
 	fmt.Println("wrote vectors into", outDir)
 }
 
@@ -246,9 +278,9 @@ func write(name string, v any) {
 	}
 }
 
-// canonicalTxHash mirrors the recipe used by P4's chain.MockClient
-// (`internal/chain/mock_client.go::mockTxHash`) so the static test vector
-// matches what the mock would emit at runtime for the same input.
+// canonicalTxHash mirrors recipe của P4 chain.MockClient
+// (`internal/chain/mock_client.go::mockTxHash`) để static vector khớp
+// với mock runtime cho cùng input.
 func canonicalTxHash(parts ...string) string {
 	h := sha256.New()
 	for _, part := range parts {

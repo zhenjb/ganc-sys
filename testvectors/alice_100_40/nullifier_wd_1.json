@@ -6,5 +6,5 @@
   "domainTag": "zkdex/nullifier/v0",
   "hashAlgorithm": "sha256",
   "nullifier": "0x1a1fdf4ccecb7040b7cd7e125226d14ed7717618d996dab969d4cb12550b22f7",
-  "note": "STATE-06 — nullifier(domain | userSecret | nonce). Placeholder hash until ZK-02 locks Poseidon/MiMC; bump domain tag then regenerate."
+  "note": "STATE-06 — nullifier(domain | userSecret | nonce). Placeholder hash until ZK-02 chốt Poseidon/MiMC; bump domain tag rồi regenerate."
 }

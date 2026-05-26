@@ -10,24 +10,25 @@ import (
 	"github.com/zhenjb/ganc-sys/internal/state"
 )
 
-// canonicalAliceWitness extends canonicalAlice (defined in
-// builder_test.go) with the balance snapshots STATE-09 needs.
+// canonicalAliceWitness mở rộng canonicalAlice (định nghĩa ở
+// builder_test.go) với balance snapshot STATE-09 cần.
 //
-// For the Alice 100/40 vector:
-//   - oldBalance = 0 (Alice has no account entry until ApplyDeposit).
-//   - newBalance = 60 (post-deposit, post-withdraw).
-//
-// We re-derive both values from a fresh LocalState so the helper does
-// not lean on knowledge from canonicalAlice's internals — any future
-// change to the canonical scenario flows here automatically.
+// Cho canonical Alice vector:
+//   - oldBalance = 0 (Alice chưa có account entry trước ApplyDeposit).
+//   - newBalance = 60 (sau khi credit 100, debit 40).
 func canonicalAliceWitness(t *testing.T) batch.WitnessInputs {
 	t.Helper()
 	in := canonicalAlice(t)
 	return batch.WitnessInputs{
-		UserSecret: aliceSecret,
 		Settlement: in,
-		OldBalance: "0",
-		NewBalance: "60",
+		Accounts: []batch.AccountWitnessSecret{
+			{
+				Owner:      aliceAddr,
+				UserSecret: aliceSecret,
+				OldBalance: "0",
+				NewBalance: "60",
+			},
+		},
 	}
 }
 
@@ -38,14 +39,21 @@ func TestWitnessBuild_CanonicalAliceVector(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 
-	if w.UserSecret != aliceSecret {
-		t.Fatalf("UserSecret: want %s, got %s", aliceSecret, w.UserSecret)
+	if len(w.Accounts) != 1 {
+		t.Fatalf("Accounts length: want 1, got %d", len(w.Accounts))
 	}
-	if w.Nonce != in.Settlement.Withdraw.Nonce {
-		t.Fatalf("Nonce: want %s, got %s", in.Settlement.Withdraw.Nonce, w.Nonce)
+	acc := w.Accounts[0]
+	if acc.Owner != aliceAddr {
+		t.Fatalf("Owner: want %s, got %s", aliceAddr, acc.Owner)
 	}
-	if w.OldBalance != "0" || w.NewBalance != "60" {
-		t.Fatalf("balances: oldBalance=%s newBalance=%s", w.OldBalance, w.NewBalance)
+	if acc.UserSecret != aliceSecret {
+		t.Fatalf("UserSecret: want %s, got %s", aliceSecret, acc.UserSecret)
+	}
+	if acc.Nonce != in.Settlement.Withdrawals[0].Request.Nonce {
+		t.Fatalf("Nonce: want %s, got %s", in.Settlement.Withdrawals[0].Request.Nonce, acc.Nonce)
+	}
+	if acc.OldBalance != "0" || acc.NewBalance != "60" {
+		t.Fatalf("balances: oldBalance=%s newBalance=%s", acc.OldBalance, acc.NewBalance)
 	}
 	if w.StatePath != nil {
 		t.Fatalf("StatePath: want nil for MVP, got %v", w.StatePath)
@@ -53,22 +61,21 @@ func TestWitnessBuild_CanonicalAliceVector(t *testing.T) {
 }
 
 func TestWitnessBuild_NullifierBindsWitnessToUpdate(t *testing.T) {
-	// Re-derive nullifier here and assert STATE-09 emits the same one
-	// STATE-06 produced. If the domain tag ever drifts between
-	// state.NullifierFor and the circuit, this test breaks before any
-	// prover round-trip.
+	// Re-derive nullifier ở đây và assert STATE-09 emit cùng nullifier
+	// STATE-06 đã sinh. Nếu domain tag drift giữa state.NullifierFor và
+	// circuit, test này gãy trước khi tốn prover round-trip.
 	in := canonicalAliceWitness(t)
 	w, err := batch.NewWitnessBuilder().Build(in)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	rederived, err := state.NullifierFor(w.UserSecret, w.Nonce)
+	rederived, err := state.NullifierFor(w.Accounts[0].UserSecret, w.Accounts[0].Nonce)
 	if err != nil {
 		t.Fatalf("NullifierFor: %v", err)
 	}
-	if rederived != in.Settlement.Nullifier {
+	if rederived != in.Settlement.Withdrawals[0].Nullifier {
 		t.Fatalf("nullifier drift: settlement=%s, witness-derived=%s",
-			in.Settlement.Nullifier, rederived)
+			in.Settlement.Withdrawals[0].Nullifier, rederived)
 	}
 }
 
@@ -77,9 +84,9 @@ func TestWitnessBuild_RejectsBalanceTransitionViolation(t *testing.T) {
 		name   string
 		mutate func(*batch.WitnessInputs)
 	}{
-		{"newBalance too small", func(in *batch.WitnessInputs) { in.NewBalance = "59" }},
-		{"newBalance too large", func(in *batch.WitnessInputs) { in.NewBalance = "61" }},
-		{"oldBalance too small", func(in *batch.WitnessInputs) { in.OldBalance = "1" }},
+		{"newBalance too small", func(in *batch.WitnessInputs) { in.Accounts[0].NewBalance = "59" }},
+		{"newBalance too large", func(in *batch.WitnessInputs) { in.Accounts[0].NewBalance = "61" }},
+		{"oldBalance too small", func(in *batch.WitnessInputs) { in.Accounts[0].OldBalance = "1" }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -98,9 +105,9 @@ func TestWitnessBuild_RejectsBalanceTransitionViolation(t *testing.T) {
 
 func TestWitnessBuild_RejectsNullifierMismatch(t *testing.T) {
 	in := canonicalAliceWitness(t)
-	// Attacker (or buggy caller) hands in a secret that does NOT match
-	// the nullifier baked into the SettlementUpdate.
-	in.UserSecret = "mallory_secret"
+	// Attacker (hay caller bug) đưa secret KHÔNG match nullifier baked
+	// trong SettlementUpdate.
+	in.Accounts[0].UserSecret = "mallory_secret"
 
 	_, err := batch.NewWitnessBuilder().Build(in)
 	if !errors.Is(err, batch.ErrInvalidWitnessInputs) {
@@ -111,16 +118,16 @@ func TestWitnessBuild_RejectsNullifierMismatch(t *testing.T) {
 	}
 }
 
-func TestWitnessBuild_RejectsMixedDenom(t *testing.T) {
+func TestWitnessBuild_RejectsOwnerNotInBatch(t *testing.T) {
 	in := canonicalAliceWitness(t)
-	in.Settlement.Withdraw.Denom = "uatom"
+	in.Accounts[0].Owner = "cosmos1bob"
 
 	_, err := batch.NewWitnessBuilder().Build(in)
 	if !errors.Is(err, batch.ErrInvalidWitnessInputs) {
-		t.Fatalf("want ErrInvalidWitnessInputs, got %v", err)
+		t.Fatalf("want sentinel, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "mixed-denom") {
-		t.Fatalf("error should mention mixed-denom: %v", err)
+	if !strings.Contains(err.Error(), "no deposit or withdrawal") {
+		t.Fatalf("error should mention missing owner participation: %v", err)
 	}
 }
 
@@ -130,15 +137,13 @@ func TestWitnessBuild_InvalidScalars(t *testing.T) {
 		mutate     func(*batch.WitnessInputs)
 		wantSubstr string
 	}{
-		{"userSecret empty", func(in *batch.WitnessInputs) { in.UserSecret = "" }, "userSecret is empty"},
-		{"userSecret whitespace", func(in *batch.WitnessInputs) { in.UserSecret = "   " }, "userSecret is empty"},
-		{"nonce junk", func(in *batch.WitnessInputs) { in.Settlement.Withdraw.Nonce = "abc" }, "withdraw.nonce"},
-		{"nonce negative", func(in *batch.WitnessInputs) { in.Settlement.Withdraw.Nonce = "-1" }, "withdraw.nonce"},
-		{"oldBalance junk", func(in *batch.WitnessInputs) { in.OldBalance = "xx" }, "oldBalance"},
-		{"oldBalance negative", func(in *batch.WitnessInputs) { in.OldBalance = "-1" }, "oldBalance"},
-		{"newBalance empty", func(in *batch.WitnessInputs) { in.NewBalance = "" }, "newBalance"},
-		{"deposit amount zero", func(in *batch.WitnessInputs) { in.Settlement.Deposit.Amount = "0" }, "deposit.amount"},
-		{"withdraw amount junk", func(in *batch.WitnessInputs) { in.Settlement.Withdraw.Amount = "??" }, "withdraw.amount"},
+		{"empty accounts", func(in *batch.WitnessInputs) { in.Accounts = nil }, "accounts is empty"},
+		{"owner empty", func(in *batch.WitnessInputs) { in.Accounts[0].Owner = "" }, "owner is empty"},
+		{"userSecret empty", func(in *batch.WitnessInputs) { in.Accounts[0].UserSecret = "" }, "userSecret is empty"},
+		{"userSecret whitespace", func(in *batch.WitnessInputs) { in.Accounts[0].UserSecret = "   " }, "userSecret is empty"},
+		{"oldBalance junk", func(in *batch.WitnessInputs) { in.Accounts[0].OldBalance = "xx" }, "oldBalance"},
+		{"oldBalance negative", func(in *batch.WitnessInputs) { in.Accounts[0].OldBalance = "-1" }, "oldBalance"},
+		{"newBalance empty", func(in *batch.WitnessInputs) { in.Accounts[0].NewBalance = "" }, "newBalance"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -155,26 +160,23 @@ func TestWitnessBuild_InvalidScalars(t *testing.T) {
 	}
 }
 
-func TestWitnessBuild_NormalizesScalars(t *testing.T) {
-	// "01" / "060" / "0100" / "  40 " must canonicalize to "1" / "60"
-	// / "100" / "40" so the bytes the prover serializes match the
-	// bytes the chain re-derives. This is the same big.Int
-	// canonicalization STATE-06/STATE-08 already apply.
+func TestWitnessBuild_NormalizesBalances(t *testing.T) {
+	// "000" / "0060" / "  60 " phải canonicalize về "0" / "60" để
+	// bytes prover serialize == bytes chain re-derive. Cùng kiểu
+	// big.Int canonicalization như STATE-06/STATE-08.
 	in := canonicalAliceWitness(t)
-	in.OldBalance = "000"
-	in.NewBalance = "0060"
-	in.Settlement.Deposit.Amount = "0100"
-	in.Settlement.Withdraw.Amount = "  40 "
+	in.Accounts[0].OldBalance = "000"
+	in.Accounts[0].NewBalance = "0060"
 
 	w, err := batch.NewWitnessBuilder().Build(in)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if w.OldBalance != "0" {
-		t.Fatalf("OldBalance must canonicalize: want 0, got %s", w.OldBalance)
+	if w.Accounts[0].OldBalance != "0" {
+		t.Fatalf("OldBalance must canonicalize: want 0, got %s", w.Accounts[0].OldBalance)
 	}
-	if w.NewBalance != "60" {
-		t.Fatalf("NewBalance must canonicalize: want 60, got %s", w.NewBalance)
+	if w.Accounts[0].NewBalance != "60" {
+		t.Fatalf("NewBalance must canonicalize: want 60, got %s", w.Accounts[0].NewBalance)
 	}
 }
 
@@ -190,18 +192,13 @@ func TestWitnessBuild_StatePathDefensiveCopy(t *testing.T) {
 	if len(w.StatePath) != len(path) {
 		t.Fatalf("StatePath length: want %d, got %d", len(path), len(w.StatePath))
 	}
-	// Mutate caller's slice; the witness must NOT change.
 	path[0] = "0xMUTATED"
 	if w.StatePath[0] == "0xMUTATED" {
-		t.Fatal("WitnessBuilder must defensively copy StatePath")
+		t.Fatal("WitnessBuilder phải defensive copy StatePath")
 	}
 }
 
 func TestWitnessBuild_OmitsStatePathWhenEmpty(t *testing.T) {
-	// MVP keeps the witness compact; an absent path serializes as
-	// `omitempty` so prover/verifier do not branch on length-zero
-	// arrays vs nil. STATE-09 must keep StatePath==nil when caller
-	// supplies none.
 	in := canonicalAliceWitness(t)
 	if in.StatePath != nil {
 		t.Fatalf("helper precondition: StatePath must be nil")
@@ -216,24 +213,21 @@ func TestWitnessBuild_OmitsStatePathWhenEmpty(t *testing.T) {
 }
 
 func TestWitnessBuild_PreservesUserSecretAfterTrim(t *testing.T) {
-	// Whitespace stripping around the secret is intentional (mirrors
-	// the trim STATE-06 applies). The trimmed value must still match
-	// the nullifier baked into the SettlementUpdate.
 	in := canonicalAliceWitness(t)
-	in.UserSecret = "  " + aliceSecret + " \t"
+	in.Accounts[0].UserSecret = "  " + aliceSecret + " \t"
 
 	w, err := batch.NewWitnessBuilder().Build(in)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if w.UserSecret != aliceSecret {
-		t.Fatalf("UserSecret: want %q, got %q", aliceSecret, w.UserSecret)
+	if w.Accounts[0].UserSecret != aliceSecret {
+		t.Fatalf("UserSecret: want %q, got %q", aliceSecret, w.Accounts[0].UserSecret)
 	}
 }
 
 func TestWitnessBuild_Concurrent(t *testing.T) {
-	// WitnessBuilder is stateless. Run a herd to assert no data race
-	// and all results identical.
+	// WitnessBuilder stateless. Chạy bầy goroutine assert no data race +
+	// mọi kết quả identical.
 	const n = 16
 	in := canonicalAliceWitness(t)
 	b := batch.NewWitnessBuilder()
@@ -249,7 +243,8 @@ func TestWitnessBuild_Concurrent(t *testing.T) {
 				t.Errorf("Build: %v", err)
 				return
 			}
-			out <- w.UserSecret + "|" + w.Nonce + "|" + w.OldBalance + "|" + w.NewBalance
+			acc := w.Accounts[0]
+			out <- acc.Owner + "|" + acc.UserSecret + "|" + acc.Nonce + "|" + acc.OldBalance + "|" + acc.NewBalance
 		}()
 	}
 	wg.Wait()

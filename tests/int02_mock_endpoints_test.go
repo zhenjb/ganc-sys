@@ -110,8 +110,11 @@ func TestINT02BuildBatchMockContract(t *testing.T) {
 		t.Fatalf("expected newStateRoot=0xrootB, got %q", body.SettlementUpdate.NewStateRoot)
 	}
 
-	if body.Witness.NewBalance != "60" {
-		t.Fatalf("expected witness newBalance=60, got %q", body.Witness.NewBalance)
+	if len(body.Witness.Accounts) != 1 {
+		t.Fatalf("expected 1 witness account, got %d", len(body.Witness.Accounts))
+	}
+	if body.Witness.Accounts[0].NewBalance != "60" {
+		t.Fatalf("expected witness accounts[0].newBalance=60, got %q", body.Witness.Accounts[0].NewBalance)
 	}
 
 	if body.State.WithdrawStatus != "batchBuilt" {
@@ -123,24 +126,8 @@ func TestINT02GenerateProofMockContract(t *testing.T) {
 	server := newTestServer()
 
 	req := types.GenerateProofRequestBody{
-		SettlementUpdate: types.SettlementUpdate{
-			BatchID:             "batch-1",
-			OldStateRoot:        "0xrootA",
-			NewStateRoot:        "0xrootB",
-			DepositID:           "dep-1",
-			DepositAmount:       "100",
-			WithdrawID:          "wd-1",
-			WithdrawAmount:      "40",
-			WithdrawAddress:     "cosmos1alice",
-			WithdrawAddressHash: "0xmockaddresshash",
-			Nullifier:           "0xmocknullifier",
-		},
-		Witness: types.Witness{
-			UserSecret: "mock-user-secret",
-			Nonce:      "1",
-			OldBalance: "0",
-			NewBalance: "60",
-		},
+		SettlementUpdate: mockSettlementUpdate(),
+		Witness:          mockWitness(),
 	}
 
 	rec := performRequest(t, server, http.MethodPost, "/api/proof/generate", req)
@@ -159,12 +146,16 @@ func TestINT02GenerateProofMockContract(t *testing.T) {
 		t.Fatalf("expected 6 public inputs, got %d", len(body.ProofBundle.PublicInputs))
 	}
 
-	if body.ProofBundle.PublicInputs[4] != "0xmockaddresshash" {
-		t.Fatalf("expected publicInputs[4]=withdrawAddressHash, got %q", body.ProofBundle.PublicInputs[4])
+	// Public input order per Agreements:
+	//   [0] oldStateRoot, [1] newStateRoot,
+	//   [2] depositsRoot, [3] withdrawalsRoot,
+	//   [4] nullifiersRoot, [5] withdrawOutputsRoot.
+	if body.ProofBundle.PublicInputs[4] != "0xmocknullifiersroot" {
+		t.Fatalf("expected publicInputs[4]=nullifiersRoot, got %q", body.ProofBundle.PublicInputs[4])
 	}
 
-	if body.ProofBundle.PublicInputs[5] != "0xmocknullifier" {
-		t.Fatalf("expected publicInputs[5]=nullifier, got %q", body.ProofBundle.PublicInputs[5])
+	if body.ProofBundle.PublicInputs[5] != "0xmockwithdrawoutputsroot" {
+		t.Fatalf("expected publicInputs[5]=withdrawOutputsRoot, got %q", body.ProofBundle.PublicInputs[5])
 	}
 
 	if body.State.ProofStatus != "ready" {
@@ -176,27 +167,16 @@ func TestINT02SubmitBatchMockContract(t *testing.T) {
 	server := newTestServer()
 
 	req := types.SubmitBatchRequestBody{
-		SettlementUpdate: types.SettlementUpdate{
-			BatchID:             "batch-1",
-			OldStateRoot:        "0xrootA",
-			NewStateRoot:        "0xrootB",
-			DepositID:           "dep-1",
-			DepositAmount:       "100",
-			WithdrawID:          "wd-1",
-			WithdrawAmount:      "40",
-			WithdrawAddress:     "cosmos1alice",
-			WithdrawAddressHash: "0xmockaddresshash",
-			Nullifier:           "0xmocknullifier",
-		},
+		SettlementUpdate: mockSettlementUpdate(),
 		ProofBundle: types.ProofBundle{
 			Proof: "0xmockproof",
 			PublicInputs: []string{
 				"0xrootA",
 				"0xrootB",
-				"100",
-				"40",
-				"0xmockaddresshash",
-				"0xmocknullifier",
+				"0xmockdepositsroot",
+				"0xmockwithdrawalsroot",
+				"0xmocknullifiersroot",
+				"0xmockwithdrawoutputsroot",
 			},
 			VerificationKeyID: "v1",
 		},
@@ -256,5 +236,51 @@ func TestINT02ClaimWithdrawMockContract(t *testing.T) {
 
 	if body.State.WithdrawStatus != "claimed" {
 		t.Fatalf("expected withdrawStatus=claimed, got %q", body.State.WithdrawStatus)
+	}
+}
+
+// mockSettlementUpdate dựng một SettlementUpdate batch-shaped khớp với
+// dữ liệu MockRepository emit. Tách thành helper để tránh repeat
+// inline literal trong nhiều test case.
+func mockSettlementUpdate() types.SettlementUpdate {
+	return types.SettlementUpdate{
+		BatchID:      "batch-1",
+		OldStateRoot: "0xrootA",
+		NewStateRoot: "0xrootB",
+		Deposits: []types.SettlementDeposit{
+			{
+				DepositID: "dep-1",
+				Owner:     "cosmos1alice",
+				Denom:     "uusdc",
+				Amount:    "100",
+			},
+		},
+		Withdrawals: []types.SettlementWithdrawal{
+			{
+				WithdrawID:      "wd-1",
+				Owner:           "cosmos1alice",
+				Denom:           "uusdc",
+				Amount:          "40",
+				Destination:     "cosmos1alice",
+				DestinationHash: "0xmockdestinationhash",
+				Nullifier:       "0xmocknullifier",
+			},
+		},
+	}
+}
+
+// mockWitness dựng một Witness batch-shaped khớp với dữ liệu
+// MockRepository emit.
+func mockWitness() types.Witness {
+	return types.Witness{
+		Accounts: []types.WitnessAccount{
+			{
+				Owner:      "cosmos1alice",
+				UserSecret: "mock-user-secret",
+				Nonce:      "1",
+				OldBalance: "0",
+				NewBalance: "60",
+			},
+		},
 	}
 }
