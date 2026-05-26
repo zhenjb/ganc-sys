@@ -1,0 +1,162 @@
+{
+  "scenario": "alice_100_40",
+  "description": "Alice 100/40 canonical scenario: deposit 100 uusdc, withdraw 40 uusdc, final user balance = 60.",
+  "vectorVersion": "v0",
+  "hashAlgorithm": "sha256",
+  "generator": "p3/script-test/gen_state_vectors",
+  "alice": {
+    "address": "cosmos1alice",
+    "denom": "uusdc",
+    "depositAmount": "100",
+    "withdrawAmount": "40",
+    "startingBalance": "1000",
+    "finalBalance": "60",
+    "moduleAccountFinalBalance": "60"
+  },
+  "roots": {
+    "rootA": "0xe4029e127d0d318624204f91c87aed84377819b97f1c80cc53edf9b35840805d",
+    "rootB": "0x9b325b4150d417adfd816930b6f291aaf9493995fe0f960864c616ff178f8620",
+    "rootC": "0x44d60f77db879799be6212c46d198243cbe2fe2969901ca3663dfb204276250c"
+  },
+  "domainTags": {
+    "nullifier": "zkdex/nullifier/v0",
+    "withdrawAddress": "zkdex/withdrawAddr/v0",
+    "depositsRoot": "zkdex/batch/depositsRoot/v0",
+    "withdrawalsRoot": "zkdex/batch/withdrawalsRoot/v0",
+    "nullifiersRoot": "zkdex/batch/nullifiersRoot/v0",
+    "withdrawOutputsRoot": "zkdex/batch/withdrawOutputsRoot/v0"
+  },
+  "files": [
+    {
+      "name": "batch_commitments_batch_1.json",
+      "stateTask": "STATE-08-ext",
+      "schema": "BatchCommitmentsVector",
+      "consumers": [
+        "P1",
+        "P2",
+        "P4"
+      ],
+      "sha256": "0xdadf7b790b14db02da93029449976c53698e51748e99f33abcaa40c2ced02ff2",
+      "note": "4 root đóng vai trò public inputs[2..5]."
+    },
+    {
+      "name": "deposit_dep_1.json",
+      "stateTask": "STATE-03 (input)",
+      "schema": "types.DepositRecord",
+      "consumers": [
+        "P1",
+        "P3",
+        "P4"
+      ],
+      "sha256": "0xdb16e8ee3aa0a64438b80e7b01ca02fb431abfda9453d7a2d5f430c35919100c",
+      "note": "Canonical dep-1 record. TxHash khớp chain.MockClient determinism recipe."
+    },
+    {
+      "name": "destination_hash_wd_1.json",
+      "stateTask": "STATE-07",
+      "schema": "DestinationHashVector",
+      "consumers": [
+        "P1",
+        "P2"
+      ],
+      "sha256": "0x6fff31ff4a3de0e4a9830fe9a580775eb69c9fddb5c13ffd94db20d231b5d4ac",
+      "note": "Domain-separated khỏi nullifier để chặn cross-domain collision."
+    },
+    {
+      "name": "initial_state.json",
+      "stateTask": "STATE-02",
+      "schema": "LocalStateSnapshot",
+      "consumers": [
+        "P1",
+        "P2",
+        "P3",
+        "P4"
+      ],
+      "sha256": "0x32c6c4c054a3e4311088d73ab2a310844edfc8d77ce839caa101319d11cf3244",
+      "note": "Baseline rootA = root of empty account set."
+    },
+    {
+      "name": "nullifier_wd_1.json",
+      "stateTask": "STATE-06",
+      "schema": "NullifierVector",
+      "consumers": [
+        "P1",
+        "P2"
+      ],
+      "sha256": "0xf220b03462f23f665dcfd6c3e3a0d166a5a8b646ead2493a7a211baf0d901ca6",
+      "note": "Demo-only userSecret = 'alice_secret'. KHÔNG bao giờ commit secret thật."
+    },
+    {
+      "name": "public_inputs_batch_1.json",
+      "stateTask": "STATE-10",
+      "schema": "PublicInputsVector",
+      "consumers": [
+        "P1",
+        "P2",
+        "P4"
+      ],
+      "sha256": "0x0924148936d704fa7252050e086af7b50eda536f7fa73bd996e3790f6f5f4ab6",
+      "note": "publicInputs[0..5] = (oldStateRoot, newStateRoot, depositsRoot, withdrawalsRoot, nullifiersRoot, withdrawOutputsRoot)."
+    },
+    {
+      "name": "settlement_update_batch_1.json",
+      "stateTask": "STATE-08",
+      "schema": "types.SettlementUpdate",
+      "consumers": [
+        "P1",
+        "P2",
+        "P4",
+        "P5"
+      ],
+      "sha256": "0x2c473d957a08de63813fa7f4d8d9bcb601d5d7da5af8bc9cce36b4e7cac436d4",
+      "note": "Batch-shaped: deposits[] + withdrawals[]. Schema không bao giờ rớt về scalar form."
+    },
+    {
+      "name": "state_after_deposit.json",
+      "stateTask": "STATE-03",
+      "schema": "LocalStateSnapshot",
+      "consumers": [
+        "P2",
+        "P3",
+        "P4"
+      ],
+      "sha256": "0x16afd8ab9c392ec5a74eb7f15f0097e6f40a9e09d025b38f46e44b7e1ba8cc47",
+      "note": "Pending off-chain state sau khi deposit credit. rootB = settlementUpdate.oldStateRoot."
+    },
+    {
+      "name": "state_after_withdrawal.json",
+      "stateTask": "STATE-05",
+      "schema": "LocalStateSnapshot",
+      "consumers": [
+        "P2",
+        "P3",
+        "P4"
+      ],
+      "sha256": "0x3fd0fc8b22ab6081975a4a3c712943d3d5d381f68d6b6ff8a046ec5f1008f340",
+      "note": "Post-batch state. rootC = settlementUpdate.newStateRoot."
+    },
+    {
+      "name": "withdraw_request_wd_1.json",
+      "stateTask": "STATE-04",
+      "schema": "types.WithdrawRequest",
+      "consumers": [
+        "P3",
+        "P4",
+        "P5"
+      ],
+      "sha256": "0x7040b78553fff0c311e6ec2899af4d8bfe1e7f73851525b12fb30ef4fd2e4b31",
+      "note": "Canonical wd-1 request. Nonce=1 ăn khớp post-state nonce."
+    },
+    {
+      "name": "witness_batch_1.json",
+      "stateTask": "STATE-09",
+      "schema": "types.Witness",
+      "consumers": [
+        "P2"
+      ],
+      "sha256": "0x74a9761c14035584c14f105f262814e4c4a82e8ff9564e14a093144ae1ee90a7",
+      "note": "Static vector: userSecret='alice_secret'. KHÁC runtime fallback 'mock-user-secret' (xem README)."
+    }
+  ],
+  "note": "STATE-11 — file inventory + SHA-256. Bump vectorVersion khi ZK-02 chốt hash circuit. KHÔNG hand-edit; chạy `go run ./p3/script-test/gen_state_vectors` để regenerate."
+}
