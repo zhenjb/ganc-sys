@@ -73,6 +73,21 @@ type batchCommitmentsVector struct {
 	Note             string                 `json:"note,omitempty"`
 }
 
+// publicInputsVector materialize STATE-10 — slice public input theo đúng
+// thứ tự Agreements + meta để P1/P2/P4 đối chiếu.
+//
+//   - PublicInputs là slice values, thứ tự khớp Labels (cùng index).
+//   - Count = len(PublicInputs) = batch.PublicInputCount.
+//   - Labels giúp test/log dễ đọc nhưng PHẢI không được dùng để re-order
+//     ở consumer; consumer dùng index const PublicInputIdx*.
+type publicInputsVector struct {
+	BatchID      string   `json:"batchId"`
+	Count        int      `json:"count"`
+	Labels       []string `json:"labels"`
+	PublicInputs []string `json:"publicInputs"`
+	Note         string   `json:"note,omitempty"`
+}
+
 func main() {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		die("mkdir: %v", err)
@@ -229,6 +244,19 @@ func main() {
 	}
 	write("witness_batch_1.json", witness)
 
+	// STATE-10 — assemble public input slice cho ProofBundle.
+	publicInputs, err := batch.BuildPublicInputs(upd, commitments)
+	if err != nil {
+		die("build public inputs: %v", err)
+	}
+	write("public_inputs_batch_1.json", publicInputsVector{
+		BatchID:      upd.BatchID,
+		Count:        len(publicInputs),
+		Labels:       batch.PublicInputLabels(),
+		PublicInputs: publicInputs,
+		Note:         "STATE-10 — slice public input ordered theo Agreements (publicInputs[0..5]). P1 verifier / P2 circuit / P4 prover client phải đọc đúng thứ tự này.",
+	})
+
 	// Sanity: post-STATE-05 invariant.
 	acc := ls.Account(aliceAddr, denom)
 	if acc.Nonce != wdReq.Nonce {
@@ -257,6 +285,10 @@ func main() {
 		"withdrawalsRoot:", commitments.WithdrawalsRoot,
 		"nullifiersRoot:", commitments.NullifiersRoot,
 		"withdrawOutputsRoot:", commitments.WithdrawOutputsRoot)
+	fmt.Println("publicInputs (STATE-10):", len(publicInputs), "entries")
+	for i, pi := range publicInputs {
+		fmt.Printf("  [%d] %s = %s\n", i, batch.PublicInputLabels()[i], pi)
+	}
 	if len(witness.Accounts) > 0 {
 		fmt.Println("witness account[0]:",
 			"owner:", witness.Accounts[0].Owner,

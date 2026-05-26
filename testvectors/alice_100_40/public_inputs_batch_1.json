@@ -1,0 +1,21 @@
+{
+  "batchId": "batch-1",
+  "count": 6,
+  "labels": [
+    "oldStateRoot",
+    "newStateRoot",
+    "depositsRoot",
+    "withdrawalsRoot",
+    "nullifiersRoot",
+    "withdrawOutputsRoot"
+  ],
+  "publicInputs": [
+    "0x9b325b4150d417adfd816930b6f291aaf9493995fe0f960864c616ff178f8620",
+    "0x44d60f77db879799be6212c46d198243cbe2fe2969901ca3663dfb204276250c",
+    "0x5ed1bb5ad7bc2681e3ff91a63f2183052caa6479ba0e9d02d87392d24e1bbc40",
+    "0xea5ccc9d188ad7d28786383089d136cc53d4bd9d9a43f755726038e9514efdb1",
+    "0x13b485d1c819a2ddff2411fbacae9d5e7aa0c6efe8c103189b44554bcab66f21",
+    "0xce5e12744106271ca8f191db22631016126b96e19653e3884dc8923e1dde8e14"
+  ],
+  "note": "STATE-10 — slice public input ordered theo Agreements (publicInputs[0..5]). P1 verifier / P2 circuit / P4 prover client phải đọc đúng thứ tự này."
+}
