@@ -18,13 +18,18 @@ import (
 	"github.com/zhenjb/ganc-sys/internal/relayer"
 	"github.com/zhenjb/ganc-sys/internal/repository"
 	"github.com/zhenjb/ganc-sys/internal/service"
+	"github.com/zhenjb/ganc-sys/internal/state"
 	"github.com/zhenjb/ganc-sys/internal/store"
 )
+
+const BatchBuilderModeLocal = "local"
+const BatchBuilderModeSnapshot = "snapshot"
 
 func main() {
 	port := getenv("PORT", "8080")
 
 	memoryStore := store.NewMemoryStore()
+	offchainStateManager := state.NewOffchainStateManager()
 
 	chainQueryMode := getenv("CHAIN_QUERY_MODE", "local")
 	chainRESTURL := getenv("CHAIN_REST_URL", "http://localhost:1317")
@@ -35,6 +40,7 @@ func main() {
 	batchBuildStore := getenv("BATCH_BUILD_STORE", repository.BatchBuildStoreMemory)
 	proofBundleStore := getenv("PROOF_BUNDLE_STORE", repository.ProofBundleStoreMemory)
 	submitBatchStore := getenv("SUBMIT_BATCH_STORE", repository.SubmitBatchStoreMemory)
+	batchBuilderMode := getenv("BATCH_BUILDER_MODE", BatchBuilderModeLocal)
 
 	dbPool := openDatabaseIfNeeded(
 		withdrawRequestStore,
@@ -86,7 +92,7 @@ func main() {
 		batchBuildStore,
 		submitBatchStore,
 	)
-	batchBuilder := batch.NewLocalBuilder()
+	batchBuilder := newBatchBuilder(batchBuilderMode, offchainStateManager)
 	batchService := service.NewBatchService(
 		batchRepository,
 		depositRepository,
@@ -126,9 +132,25 @@ func main() {
 	log.Printf("batch build store=%s", batchBuildStore)
 	log.Printf("proof bundle store=%s", proofBundleStore)
 	log.Printf("submit batch store=%s", submitBatchStore)
+	log.Printf("batch builder mode=%s", batchBuilderMode)
 
 	if err := http.ListenAndServe(addr, router.Routes()); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func newBatchBuilder(
+	mode string,
+	offchainStateManager *state.OffchainStateManager,
+) batch.Builder {
+	switch mode {
+	case BatchBuilderModeSnapshot:
+		return batch.NewSnapshotBuilder(offchainStateManager)
+	case BatchBuilderModeLocal:
+		return batch.NewLocalBuilder()
+	default:
+		log.Printf("unknown BATCH_BUILDER_MODE=%q, falling back to local", mode)
+		return batch.NewLocalBuilder()
 	}
 }
 
