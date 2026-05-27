@@ -19,11 +19,11 @@ var (
 // The root advances every time a deposit/withdraw is applied locally; on-chain
 // `currentStateRoot` only catches up once `MsgSubmitBatchProof` is accepted.
 type LocalState struct {
-	mu                 sync.Mutex
-	accounts           *AccountState
-	root               string
-	appliedDeposits    map[string]struct{}
-	appliedNullifiers  map[string]struct{}
+	mu                sync.Mutex
+	accounts          *AccountState
+	root              string
+	appliedDeposits   map[string]struct{}
+	appliedNullifiers map[string]struct{}
 }
 
 // NewLocalState initializes an empty off-chain state.

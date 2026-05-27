@@ -40,13 +40,13 @@ type WithdrawalInput struct {
 // nguyên dạng slice để contract đúng từ ngày đầu.
 //
 //   - OldStateRoot: LocalState.Root() trước khi apply mọi withdrawal
-//                   trong batch.
+//     trong batch.
 //   - NewStateRoot: LocalState.Root() sau khi apply toàn bộ batch.
 //   - Deposits:     các DepositRecord (STATE-03) tham gia batch. Owner/
-//                   Denom/Amount phải khớp với những gì STATE-03 dùng
-//                   để credit LocalState.
+//     Denom/Amount phải khớp với những gì STATE-03 dùng
+//     để credit LocalState.
 //   - Withdrawals:  các WithdrawRequest (STATE-04) tham gia batch,
-//                   kèm Nullifier (STATE-06) và DestinationHash (STATE-07).
+//     kèm Nullifier (STATE-06) và DestinationHash (STATE-07).
 type SettlementInputs struct {
 	OldStateRoot string
 	NewStateRoot string

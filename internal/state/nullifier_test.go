@@ -94,9 +94,9 @@ func TestNullifierFor_NonceCanonicalization(t *testing.T) {
 
 func TestNullifierFor_DifferentInputsDifferentOutputs(t *testing.T) {
 	cases := []struct {
-		name           string
-		a              [2]string
-		b              [2]string
+		name string
+		a    [2]string
+		b    [2]string
 	}{
 		{"different secret", [2]string{"alice_secret", "1"}, [2]string{"bob_secret", "1"}},
 		{"different nonce", [2]string{"alice_secret", "1"}, [2]string{"alice_secret", "2"}},

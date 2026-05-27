@@ -21,10 +21,10 @@ var ErrInvalidWitnessInputs = errors.New("batch: invalid witness inputs")
 // caller truyền lại để tránh drift.
 //
 //   - Owner:      bech32 address (hoặc opaque id) của account. PHẢI trùng
-//                 với owner xuất hiện ở Deposit/Withdraw trong settlement.
+//     với owner xuất hiện ở Deposit/Withdraw trong settlement.
 //   - UserSecret: opaque bytes ví/P3 sở hữu. Bind vào nullifier qua
-//                 state.NullifierFor(secret, nonce). KHÔNG bao giờ
-//                 escape ra ngoài witness file.
+//     state.NullifierFor(secret, nonce). KHÔNG bao giờ
+//     escape ra ngoài witness file.
 //   - OldBalance: balance của (Owner, Denom) TRƯỚC khi batch apply.
 //   - NewBalance: balance của (Owner, Denom) SAU khi batch apply.
 type AccountWitnessSecret struct {
@@ -66,7 +66,7 @@ func NewWitnessBuilder() *WitnessBuilder { return &WitnessBuilder{} }
 //  3. OldBalance / NewBalance parse non-negative int.
 //  4. Tính sum(deposits của Owner).amount và sum(withdrawals của
 //     Owner).amount, sau đó assert ZK-04:
-//        newBalance + sumWithdraw == oldBalance + sumDeposit
+//     newBalance + sumWithdraw == oldBalance + sumDeposit
 //  5. Với MỖI withdrawal của Owner trong settlement: re-derive
 //     state.NullifierFor(secret, request.Nonce) và assert bằng
 //     Nullifier mà settlement entry đang mang. Stale (secret, nonce)

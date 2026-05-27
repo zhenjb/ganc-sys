@@ -276,7 +276,7 @@ func TestBuild_InvalidDepositAndWithdrawIdentity(t *testing.T) {
 
 func TestBuild_NormalizesAmounts(t *testing.T) {
 	in := canonicalAlice(t)
-	in.Deposits[0].Amount = "0100"            // leading zero
+	in.Deposits[0].Amount = "0100"              // leading zero
 	in.Withdrawals[0].Request.Amount = "  40  " // whitespace
 
 	upd, err := batch.NewSettlementUpdateBuilder().Build(in)

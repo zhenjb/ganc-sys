@@ -60,17 +60,17 @@ type AccountSecret struct {
 // deposit + 1 withdrawal, các mảng vẫn là slice.
 //
 //   - OldStateRoot:     root mà caller (P4) đọc từ chain
-//                       (QueryCurrentStateRoot) hoặc đặt làm placeholder
-//                       trong MVP. Builder KHÔNG tự reconcile với fresh
-//                       LocalState root — đó là việc của P1 verifier khi
-//                       kiểm public input. Builder chỉ echo lại
-//                       OldStateRoot vào output SettlementUpdate.
+//     (QueryCurrentStateRoot) hoặc đặt làm placeholder
+//     trong MVP. Builder KHÔNG tự reconcile với fresh
+//     LocalState root — đó là việc của P1 verifier khi
+//     kiểm public input. Builder chỉ echo lại
+//     OldStateRoot vào output SettlementUpdate.
 //   - Deposits:         các DepositRecord chain đã có
-//                       (processed=false) và P4 đã resolve qua depositId.
+//     (processed=false) và P4 đã resolve qua depositId.
 //   - WithdrawRequests: các WithdrawRequest đã được STATE-04 build trước
-//                       đó (nonce/withdrawId đã gán đúng).
+//     đó (nonce/withdrawId đã gán đúng).
 //   - AccountSecrets:   OPTIONAL. Secret của từng owner. Owner không có
-//                       entry → fallback literal mvpMockSecret.
+//     entry → fallback literal mvpMockSecret.
 type BuildInput struct {
 	OldStateRoot     string
 	Deposits         []types.DepositRecord
