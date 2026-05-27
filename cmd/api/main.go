@@ -32,8 +32,9 @@ func main() {
 
 	withdrawRequestStore := getenv("WITHDRAW_REQUEST_STORE", repository.WithdrawRequestStoreMemory)
 	batchBuildStore := getenv("BATCH_BUILD_STORE", repository.BatchBuildStoreMemory)
+	proofBundleStore := getenv("PROOF_BUNDLE_STORE", repository.ProofBundleStoreMemory)
 
-	dbPool := openDatabaseIfNeeded(withdrawRequestStore, batchBuildStore)
+	dbPool := openDatabaseIfNeeded(withdrawRequestStore, batchBuildStore, proofBundleStore)
 	if dbPool != nil {
 		defer dbPool.Close()
 	}
@@ -86,7 +87,11 @@ func main() {
 	batchHandler := handler.NewBatchHandler(batchService)
 
 	proverClient := prover.NewLocalClient()
-	proofRepository := repository.NewProofRepository(memoryStore)
+	proofRepository := repository.NewProofRepositoryWithDB(
+		memoryStore,
+		dbPool,
+		proofBundleStore,
+	)
 	proofService := service.NewProofService(proverClient, proofRepository)
 	proofHandler := handler.NewProofHandler(proofService)
 
@@ -108,16 +113,22 @@ func main() {
 	log.Printf("chain query mode=%s rest=%s", chainQueryMode, chainRESTURL)
 	log.Printf("withdraw request store=%s", withdrawRequestStore)
 	log.Printf("batch build store=%s", batchBuildStore)
+	log.Printf("proof bundle store=%s", proofBundleStore)
 
 	if err := http.ListenAndServe(addr, router.Routes()); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func openDatabaseIfNeeded(withdrawRequestStore string, batchBuildStore string) *pgxpool.Pool {
+func openDatabaseIfNeeded(
+	withdrawRequestStore string,
+	batchBuildStore string,
+	proofBundleStore string,
+) *pgxpool.Pool {
 	needsDB :=
 		withdrawRequestStore == repository.WithdrawRequestStorePostgres ||
-			batchBuildStore == repository.BatchBuildStorePostgres
+			batchBuildStore == repository.BatchBuildStorePostgres ||
+			proofBundleStore == repository.ProofBundleStorePostgres
 
 	if !needsDB {
 		return nil

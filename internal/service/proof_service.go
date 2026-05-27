@@ -37,7 +37,7 @@ func (s *ProofService) GenerateProof(ctx context.Context, req types.GenerateProo
 		return types.GenerateProofResponse{}, err
 	}
 
-	s.proofRepository.SaveProofBundle(ctx, proofBundle)
+	s.proofRepository.SaveProofBundle(ctx, req.SettlementUpdate.BatchID, proofBundle)
 
 	return types.GenerateProofResponse{
 		ProofBundle: proofBundle,
