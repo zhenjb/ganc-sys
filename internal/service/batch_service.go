@@ -105,10 +105,13 @@ func (s *BatchService) SubmitBatch(ctx context.Context, req types.SubmitBatchReq
 		return types.SubmitBatchResponse{}, err
 	}
 
-	s.batchRepository.SaveBatchSubmitted(
+	s.batchRepository.SaveBatchSubmitResult(
 		ctx,
 		req.SettlementUpdate,
 		req.BatchCommitments,
+		result.TxHash,
+		result.Accepted,
+		result.ProofStatus,
 		result.WithdrawRecords,
 	)
 

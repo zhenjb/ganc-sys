@@ -33,8 +33,14 @@ func main() {
 	withdrawRequestStore := getenv("WITHDRAW_REQUEST_STORE", repository.WithdrawRequestStoreMemory)
 	batchBuildStore := getenv("BATCH_BUILD_STORE", repository.BatchBuildStoreMemory)
 	proofBundleStore := getenv("PROOF_BUNDLE_STORE", repository.ProofBundleStoreMemory)
+	submitBatchStore := getenv("SUBMIT_BATCH_STORE", repository.SubmitBatchStoreMemory)
 
-	dbPool := openDatabaseIfNeeded(withdrawRequestStore, batchBuildStore, proofBundleStore)
+	dbPool := openDatabaseIfNeeded(
+		withdrawRequestStore,
+		batchBuildStore,
+		proofBundleStore,
+		submitBatchStore,
+	)
 	if dbPool != nil {
 		defer dbPool.Close()
 	}
@@ -75,6 +81,7 @@ func main() {
 		memoryStore,
 		dbPool,
 		batchBuildStore,
+		submitBatchStore,
 	)
 	batchBuilder := batch.NewLocalBuilder()
 	batchService := service.NewBatchService(
@@ -114,6 +121,7 @@ func main() {
 	log.Printf("withdraw request store=%s", withdrawRequestStore)
 	log.Printf("batch build store=%s", batchBuildStore)
 	log.Printf("proof bundle store=%s", proofBundleStore)
+	log.Printf("submit batch store=%s", submitBatchStore)
 
 	if err := http.ListenAndServe(addr, router.Routes()); err != nil {
 		log.Fatal(err)
@@ -124,11 +132,13 @@ func openDatabaseIfNeeded(
 	withdrawRequestStore string,
 	batchBuildStore string,
 	proofBundleStore string,
+	submitBatchStore string,
 ) *pgxpool.Pool {
 	needsDB :=
 		withdrawRequestStore == repository.WithdrawRequestStorePostgres ||
 			batchBuildStore == repository.BatchBuildStorePostgres ||
-			proofBundleStore == repository.ProofBundleStorePostgres
+			proofBundleStore == repository.ProofBundleStorePostgres ||
+			submitBatchStore == repository.SubmitBatchStorePostgres
 
 	if !needsDB {
 		return nil
