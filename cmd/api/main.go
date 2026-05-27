@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
+	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/zhenjb/ganc-sys/internal/api"
 	"github.com/zhenjb/ganc-sys/internal/batch"
 	"github.com/zhenjb/ganc-sys/internal/chain"
+	appdb "github.com/zhenjb/ganc-sys/internal/db"
 	"github.com/zhenjb/ganc-sys/internal/handler"
 	"github.com/zhenjb/ganc-sys/internal/indexer"
 	"github.com/zhenjb/ganc-sys/internal/prover"
@@ -22,9 +26,16 @@ func main() {
 
 	memoryStore := store.NewMemoryStore()
 
-	chainQueryMode := getenv("CHAIN_QUERY_MODE", "rest")
+	chainQueryMode := getenv("CHAIN_QUERY_MODE", "local")
 	chainRESTURL := getenv("CHAIN_REST_URL", "http://localhost:1317")
 	chainQueryClient := chain.NewRestQueryClient(chainRESTURL)
+
+	withdrawRequestStore := getenv("WITHDRAW_REQUEST_STORE", repository.WithdrawRequestStoreMemory)
+
+	dbPool := openDatabaseIfNeeded(withdrawRequestStore)
+	if dbPool != nil {
+		defer dbPool.Close()
+	}
 
 	healthRepository := repository.NewHealthRepository()
 	healthService := service.NewHealthService(healthRepository)
@@ -50,7 +61,11 @@ func main() {
 	depositService := service.NewDepositService(depositRepository, depositIndexer, chainClient)
 	depositHandler := handler.NewDepositHandler(depositService)
 
-	withdrawRepository := repository.NewWithdrawRepository(memoryStore)
+	withdrawRepository := repository.NewWithdrawRepositoryWithDB(
+		memoryStore,
+		dbPool,
+		withdrawRequestStore,
+	)
 	withdrawService := service.NewWithdrawService(withdrawRepository, relayerClient)
 	withdrawHandler := handler.NewWithdrawHandler(withdrawService)
 
@@ -86,10 +101,27 @@ func main() {
 	addr := ":" + port
 	log.Printf("ganc-sys backend API listening on http://localhost%s", addr)
 	log.Printf("chain query mode=%s rest=%s", chainQueryMode, chainRESTURL)
+	log.Printf("withdraw request store=%s", withdrawRequestStore)
 
 	if err := http.ListenAndServe(addr, router.Routes()); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func openDatabaseIfNeeded(withdrawRequestStore string) *pgxpool.Pool {
+	if withdrawRequestStore != repository.WithdrawRequestStorePostgres {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	pool, err := appdb.Open(ctx, appdb.DatabaseURLFromEnv())
+	if err != nil {
+		log.Fatalf("open database: %v", err)
+	}
+
+	return pool
 }
 
 func getenv(key string, fallback string) string {
