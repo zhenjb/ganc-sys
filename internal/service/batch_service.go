@@ -187,6 +187,27 @@ func (s *BatchService) SubmitBatch(ctx context.Context, req types.SubmitBatchReq
 		result.WithdrawRecords,
 	)
 
+	if s.buildSource == BatchBuildSourcePending && s.offchainSettlementService != nil {
+		if result.Accepted {
+			if err := s.offchainSettlementService.CommitBatch(
+				ctx,
+				req.SettlementUpdate.BatchID,
+				result.TxHash,
+				req.SettlementUpdate.NewStateRoot,
+			); err != nil {
+				return types.SubmitBatchResponse{}, err
+			}
+		} else {
+			if err := s.offchainSettlementService.FailBatch(
+				ctx,
+				req.SettlementUpdate.BatchID,
+				result.ProofStatus,
+			); err != nil {
+				return types.SubmitBatchResponse{}, err
+			}
+		}
+	}
+
 	return types.SubmitBatchResponse{
 		TxHash:           result.TxHash,
 		Accepted:         result.Accepted,
