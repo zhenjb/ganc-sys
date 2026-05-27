@@ -589,3 +589,63 @@ func (r *OffchainSettlementRepository) markByBatch(
 
 	return tx.Commit(ctx)
 }
+
+func (r *OffchainSettlementRepository) ReopenIncluded(
+	ctx context.Context,
+	batchID string,
+	reason string,
+) error {
+	if r.dbPool == nil {
+		return errors.New("offchain settlement repository db pool is nil")
+	}
+
+	tx, err := r.dbPool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	depositTag, err := tx.Exec(
+		ctx,
+		`
+		UPDATE offchain_pending_deposits
+		SET status = 'pending',
+			batch_id = NULL,
+			tx_hash = NULL,
+			error_message = NULLIF($2, ''),
+			updated_at = NOW()
+		WHERE batch_id = $1
+		  AND status = 'included'
+		`,
+		batchID,
+		reason,
+	)
+	if err != nil {
+		return err
+	}
+
+	withdrawTag, err := tx.Exec(
+		ctx,
+		`
+		UPDATE offchain_pending_withdrawals
+		SET status = 'pending',
+			batch_id = NULL,
+			tx_hash = NULL,
+			error_message = NULLIF($2, ''),
+			updated_at = NOW()
+		WHERE batch_id = $1
+		  AND status = 'included'
+		`,
+		batchID,
+		reason,
+	)
+	if err != nil {
+		return err
+	}
+
+	if depositTag.RowsAffected()+withdrawTag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: included batch %s", ErrOffchainSettlementRecordNotFound, batchID)
+	}
+
+	return tx.Commit(ctx)
+}

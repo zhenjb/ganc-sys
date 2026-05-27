@@ -357,6 +357,18 @@ func (s *OffchainSettlementService) FailBatch(
 	return s.repository.MarkFailed(ctx, batchID, reason)
 }
 
+func (s *OffchainSettlementService) CancelIncludedBatch(
+	ctx context.Context,
+	batchID string,
+	reason string,
+) error {
+	if s.repository == nil {
+		return ErrOffchainSettlementUnavailable
+	}
+
+	return s.repository.ReopenIncluded(ctx, batchID, reason)
+}
+
 func (s *OffchainSettlementService) Cursor(ctx context.Context) (repository.OffchainStateCursor, error) {
 	if s.repository == nil {
 		return repository.OffchainStateCursor{}, ErrOffchainSettlementUnavailable
