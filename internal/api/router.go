@@ -7,34 +7,37 @@ import (
 )
 
 type RouterDeps struct {
-	HealthHandler     *handler.HealthHandler
-	StateHandler      *handler.StateHandler
-	DepositHandler    *handler.DepositHandler
-	WithdrawHandler   *handler.WithdrawHandler
-	BatchHandler      *handler.BatchHandler
-	ProofHandler      *handler.ProofHandler
-	ChainQueryHandler *handler.ChainQueryHandler
+	HealthHandler             *handler.HealthHandler
+	StateHandler              *handler.StateHandler
+	DepositHandler            *handler.DepositHandler
+	WithdrawHandler           *handler.WithdrawHandler
+	BatchHandler              *handler.BatchHandler
+	ProofHandler              *handler.ProofHandler
+	ChainQueryHandler         *handler.ChainQueryHandler
+	OffchainSettlementHandler *handler.OffchainSettlementHandler
 }
 
 type Router struct {
-	healthHandler     *handler.HealthHandler
-	stateHandler      *handler.StateHandler
-	depositHandler    *handler.DepositHandler
-	withdrawHandler   *handler.WithdrawHandler
-	batchHandler      *handler.BatchHandler
-	proofHandler      *handler.ProofHandler
-	chainQueryHandler *handler.ChainQueryHandler
+	healthHandler             *handler.HealthHandler
+	stateHandler              *handler.StateHandler
+	depositHandler            *handler.DepositHandler
+	withdrawHandler           *handler.WithdrawHandler
+	batchHandler              *handler.BatchHandler
+	proofHandler              *handler.ProofHandler
+	chainQueryHandler         *handler.ChainQueryHandler
+	offchainSettlementHandler *handler.OffchainSettlementHandler
 }
 
 func NewRouter(deps RouterDeps) *Router {
 	return &Router{
-		healthHandler:     deps.HealthHandler,
-		stateHandler:      deps.StateHandler,
-		depositHandler:    deps.DepositHandler,
-		withdrawHandler:   deps.WithdrawHandler,
-		batchHandler:      deps.BatchHandler,
-		proofHandler:      deps.ProofHandler,
-		chainQueryHandler: deps.ChainQueryHandler,
+		healthHandler:             deps.HealthHandler,
+		stateHandler:              deps.StateHandler,
+		depositHandler:            deps.DepositHandler,
+		withdrawHandler:           deps.WithdrawHandler,
+		batchHandler:              deps.BatchHandler,
+		proofHandler:              deps.ProofHandler,
+		chainQueryHandler:         deps.ChainQueryHandler,
+		offchainSettlementHandler: deps.OffchainSettlementHandler,
 	}
 }
 
@@ -62,6 +65,13 @@ func (r *Router) Routes() http.Handler {
 	if r.chainQueryHandler != nil {
 		mux.HandleFunc("GET /api/chain/withdraw-records/{withdrawId}", r.chainQueryHandler.GetWithdrawRecord)
 		mux.HandleFunc("GET /api/chain/nullifiers/{nullifier}", r.chainQueryHandler.GetNullifierUsed)
+	}
+
+	if r.offchainSettlementHandler != nil {
+		mux.HandleFunc(
+			"POST /api/internal/offchain-settlement/batches/{batchId}/cancel",
+			r.offchainSettlementHandler.CancelIncludedBatch,
+		)
 	}
 
 	return withCORS(mux)

@@ -67,6 +67,11 @@ func main() {
 		)
 	}
 
+	var offchainSettlementHandler *handler.OffchainSettlementHandler
+	if offchainSettlementService != nil {
+		offchainSettlementHandler = handler.NewOffchainSettlementHandler(offchainSettlementService)
+	}
+
 	healthRepository := repository.NewHealthRepository()
 	healthService := service.NewHealthService(healthRepository)
 	healthHandler := handler.NewHealthHandler(healthService)
@@ -146,13 +151,14 @@ func main() {
 	chainQueryHandler := handler.NewChainQueryHandler(chainQueryService)
 
 	router := api.NewRouter(api.RouterDeps{
-		HealthHandler:     healthHandler,
-		StateHandler:      stateHandler,
-		DepositHandler:    depositHandler,
-		WithdrawHandler:   withdrawHandler,
-		BatchHandler:      batchHandler,
-		ProofHandler:      proofHandler,
-		ChainQueryHandler: chainQueryHandler,
+		HealthHandler:             healthHandler,
+		StateHandler:              stateHandler,
+		DepositHandler:            depositHandler,
+		WithdrawHandler:           withdrawHandler,
+		BatchHandler:              batchHandler,
+		ProofHandler:              proofHandler,
+		ChainQueryHandler:         chainQueryHandler,
+		OffchainSettlementHandler: offchainSettlementHandler,
 	})
 
 	addr := ":" + port
