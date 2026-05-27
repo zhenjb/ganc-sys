@@ -21,23 +21,33 @@ var ErrWithdrawAlreadyClaimed = errors.New("withdraw already claimed")
 const WithdrawRequestStoreMemory = "memory"
 const WithdrawRequestStorePostgres = "postgres"
 
+const WithdrawRecordStoreMemory = "memory"
+const WithdrawRecordStorePostgres = "postgres"
+
 // WithdrawRepository owns withdrawal request and withdrawal record access.
 //
-// DB-02 status:
+// DB-02:
 // - withdraw_requests can be persisted in Postgres.
-// - default mode remains MemoryStore for local tests.
-// - withdrawRecords remain MemoryStore for now; they will move in a later DB task.
+//
+// DB-06:
+// - indexed_withdraw_records can be read from Postgres.
+// - claim updates indexed_withdraw_records.claimed=true in Postgres.
+//
+// Default mode remains MemoryStore for local tests.
 type WithdrawRepository struct {
 	store *store.MemoryStore
 
-	dbPool       *pgxpool.Pool
+	dbPool *pgxpool.Pool
+
 	requestStore string
+	recordStore  string
 }
 
 func NewWithdrawRepository(store *store.MemoryStore) *WithdrawRepository {
 	return &WithdrawRepository{
 		store:        store,
 		requestStore: WithdrawRequestStoreMemory,
+		recordStore:  WithdrawRecordStoreMemory,
 	}
 }
 
@@ -45,15 +55,22 @@ func NewWithdrawRepositoryWithDB(
 	store *store.MemoryStore,
 	dbPool *pgxpool.Pool,
 	requestStore string,
+	recordStoreValues ...string,
 ) *WithdrawRepository {
 	if requestStore == "" {
 		requestStore = WithdrawRequestStoreMemory
+	}
+
+	recordStore := WithdrawRecordStoreMemory
+	if len(recordStoreValues) > 0 && recordStoreValues[0] != "" {
+		recordStore = recordStoreValues[0]
 	}
 
 	return &WithdrawRepository{
 		store:        store,
 		dbPool:       dbPool,
 		requestStore: requestStore,
+		recordStore:  recordStore,
 	}
 }
 
@@ -93,15 +110,35 @@ func (r *WithdrawRepository) ListWithdrawRequests(ctx context.Context) []types.W
 
 func (r *WithdrawRepository) SaveWithdrawRecords(ctx context.Context, records []types.WithdrawRecord) {
 	for _, record := range records {
-		r.store.SaveWithdrawRecord(record)
+		r.SaveWithdrawRecord(ctx, record)
 	}
 }
 
 func (r *WithdrawRepository) SaveWithdrawRecord(ctx context.Context, record types.WithdrawRecord) {
 	r.store.SaveWithdrawRecord(record)
+
+	if r.recordStore == WithdrawRecordStorePostgres {
+		if err := r.saveWithdrawRecordPostgres(ctx, record, ""); err != nil {
+			panic(fmt.Sprintf("save withdraw record in postgres: %v", err))
+		}
+	}
 }
 
 func (r *WithdrawRepository) GetWithdrawRecord(ctx context.Context, withdrawID string) (types.WithdrawRecord, error) {
+	if r.recordStore == WithdrawRecordStorePostgres {
+		record, err := r.getWithdrawRecordPostgres(ctx, withdrawID)
+		if err == nil {
+			return record, nil
+		}
+
+		if !errors.Is(err, ErrWithdrawRecordNotFound) {
+			return types.WithdrawRecord{}, err
+		}
+
+		// Transitional fallback only. DB must never override chain/DB truth,
+		// but this keeps local flow compatible while migration is incremental.
+	}
+
 	record, ok := r.store.GetWithdrawRecord(withdrawID)
 	if !ok {
 		return types.WithdrawRecord{}, ErrWithdrawRecordNotFound
@@ -111,6 +148,26 @@ func (r *WithdrawRepository) GetWithdrawRecord(ctx context.Context, withdrawID s
 }
 
 func (r *WithdrawRepository) ClaimWithdrawRecord(ctx context.Context, withdrawID string) (types.WithdrawRecord, error) {
+	if r.recordStore == WithdrawRecordStorePostgres {
+		record, err := r.claimWithdrawRecordPostgres(ctx, withdrawID)
+		if err == nil {
+			// Keep in-memory dashboard snapshot in sync when the record exists
+			// in the current process. Ignore if this backend restarted and only
+			// DB has the record.
+			if _, ok := r.store.GetWithdrawRecord(withdrawID); ok {
+				_, _ = r.store.ClaimWithdrawRecord(withdrawID)
+			}
+
+			return record, nil
+		}
+
+		if !errors.Is(err, ErrWithdrawRecordNotFound) {
+			return types.WithdrawRecord{}, err
+		}
+
+		// Transitional fallback only.
+	}
+
 	record, ok := r.store.GetWithdrawRecord(withdrawID)
 	if !ok {
 		return types.WithdrawRecord{}, ErrWithdrawRecordNotFound
@@ -129,6 +186,15 @@ func (r *WithdrawRepository) ClaimWithdrawRecord(ctx context.Context, withdrawID
 }
 
 func (r *WithdrawRepository) ListWithdrawRecords(ctx context.Context) []types.WithdrawRecord {
+	if r.recordStore == WithdrawRecordStorePostgres {
+		records, err := r.listWithdrawRecordsPostgres(ctx)
+		if err != nil {
+			panic(fmt.Sprintf("list withdraw records from postgres: %v", err))
+		}
+
+		return records
+	}
+
 	return r.store.ListWithdrawRecords()
 }
 
@@ -319,6 +385,188 @@ func (r *WithdrawRepository) listWithdrawRequestsPostgres(ctx context.Context) (
 	}
 
 	return requests, nil
+}
+
+func (r *WithdrawRepository) saveWithdrawRecordPostgres(
+	ctx context.Context,
+	record types.WithdrawRecord,
+	txHash string,
+) error {
+	if r.dbPool == nil {
+		return errors.New("postgres withdraw record store selected but db pool is nil")
+	}
+
+	_, err := r.dbPool.Exec(
+		ctx,
+		`
+		INSERT INTO indexed_withdraw_records (
+			withdraw_id,
+			owner_address,
+			denom,
+			amount,
+			destination_address,
+			nullifier,
+			claimed,
+			tx_hash,
+			updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, ''), NOW())
+		ON CONFLICT (withdraw_id) DO UPDATE SET
+			owner_address = EXCLUDED.owner_address,
+			denom = EXCLUDED.denom,
+			amount = EXCLUDED.amount,
+			destination_address = EXCLUDED.destination_address,
+			nullifier = EXCLUDED.nullifier,
+			claimed = EXCLUDED.claimed,
+			tx_hash = COALESCE(EXCLUDED.tx_hash, indexed_withdraw_records.tx_hash),
+			updated_at = NOW()
+		`,
+		record.WithdrawID,
+		record.Owner,
+		record.Denom,
+		record.Amount,
+		record.Destination,
+		record.Nullifier,
+		record.Claimed,
+		txHash,
+	)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (r *WithdrawRepository) getWithdrawRecordPostgres(
+	ctx context.Context,
+	withdrawID string,
+) (types.WithdrawRecord, error) {
+	if r.dbPool == nil {
+		return types.WithdrawRecord{}, errors.New("postgres withdraw record store selected but db pool is nil")
+	}
+
+	var record types.WithdrawRecord
+
+	err := r.dbPool.QueryRow(
+		ctx,
+		`
+		SELECT
+			withdraw_id,
+			owner_address,
+			denom,
+			amount,
+			destination_address,
+			nullifier,
+			claimed
+		FROM indexed_withdraw_records
+		WHERE withdraw_id = $1
+		`,
+		withdrawID,
+	).Scan(
+		&record.WithdrawID,
+		&record.Owner,
+		&record.Denom,
+		&record.Amount,
+		&record.Destination,
+		&record.Nullifier,
+		&record.Claimed,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return types.WithdrawRecord{}, ErrWithdrawRecordNotFound
+		}
+
+		return types.WithdrawRecord{}, err
+	}
+
+	return record, nil
+}
+
+func (r *WithdrawRepository) claimWithdrawRecordPostgres(
+	ctx context.Context,
+	withdrawID string,
+) (types.WithdrawRecord, error) {
+	if r.dbPool == nil {
+		return types.WithdrawRecord{}, errors.New("postgres withdraw record store selected but db pool is nil")
+	}
+
+	record, err := r.getWithdrawRecordPostgres(ctx, withdrawID)
+	if err != nil {
+		return types.WithdrawRecord{}, err
+	}
+
+	if record.Claimed {
+		return types.WithdrawRecord{}, ErrWithdrawAlreadyClaimed
+	}
+
+	_, err = r.dbPool.Exec(
+		ctx,
+		`
+		UPDATE indexed_withdraw_records
+		SET claimed = TRUE,
+			updated_at = NOW()
+		WHERE withdraw_id = $1
+		`,
+		withdrawID,
+	)
+	if err != nil {
+		return types.WithdrawRecord{}, err
+	}
+
+	record.Claimed = true
+	return record, nil
+}
+
+func (r *WithdrawRepository) listWithdrawRecordsPostgres(ctx context.Context) ([]types.WithdrawRecord, error) {
+	if r.dbPool == nil {
+		return nil, errors.New("postgres withdraw record store selected but db pool is nil")
+	}
+
+	rows, err := r.dbPool.Query(
+		ctx,
+		`
+		SELECT
+			withdraw_id,
+			owner_address,
+			denom,
+			amount,
+			destination_address,
+			nullifier,
+			claimed
+		FROM indexed_withdraw_records
+		ORDER BY created_at ASC, withdraw_id ASC
+		`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	records := make([]types.WithdrawRecord, 0)
+
+	for rows.Next() {
+		var record types.WithdrawRecord
+
+		if err := rows.Scan(
+			&record.WithdrawID,
+			&record.Owner,
+			&record.Denom,
+			&record.Amount,
+			&record.Destination,
+			&record.Nullifier,
+			&record.Claimed,
+		); err != nil {
+			return nil, err
+		}
+
+		records = append(records, record)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return records, nil
 }
 
 func localWithdrawSignature(parts ...string) string {

@@ -31,12 +31,14 @@ func main() {
 	chainQueryClient := chain.NewRestQueryClient(chainRESTURL)
 
 	withdrawRequestStore := getenv("WITHDRAW_REQUEST_STORE", repository.WithdrawRequestStoreMemory)
+	withdrawRecordStore := getenv("WITHDRAW_RECORD_STORE", repository.WithdrawRecordStoreMemory)
 	batchBuildStore := getenv("BATCH_BUILD_STORE", repository.BatchBuildStoreMemory)
 	proofBundleStore := getenv("PROOF_BUNDLE_STORE", repository.ProofBundleStoreMemory)
 	submitBatchStore := getenv("SUBMIT_BATCH_STORE", repository.SubmitBatchStoreMemory)
 
 	dbPool := openDatabaseIfNeeded(
 		withdrawRequestStore,
+		withdrawRecordStore,
 		batchBuildStore,
 		proofBundleStore,
 		submitBatchStore,
@@ -73,6 +75,7 @@ func main() {
 		memoryStore,
 		dbPool,
 		withdrawRequestStore,
+		withdrawRecordStore,
 	)
 	withdrawService := service.NewWithdrawService(withdrawRepository, relayerClient)
 	withdrawHandler := handler.NewWithdrawHandler(withdrawService)
@@ -119,6 +122,7 @@ func main() {
 	log.Printf("ganc-sys backend API listening on http://localhost%s", addr)
 	log.Printf("chain query mode=%s rest=%s", chainQueryMode, chainRESTURL)
 	log.Printf("withdraw request store=%s", withdrawRequestStore)
+	log.Printf("withdraw record store=%s", withdrawRecordStore)
 	log.Printf("batch build store=%s", batchBuildStore)
 	log.Printf("proof bundle store=%s", proofBundleStore)
 	log.Printf("submit batch store=%s", submitBatchStore)
@@ -130,12 +134,14 @@ func main() {
 
 func openDatabaseIfNeeded(
 	withdrawRequestStore string,
+	withdrawRecordStore string,
 	batchBuildStore string,
 	proofBundleStore string,
 	submitBatchStore string,
 ) *pgxpool.Pool {
 	needsDB :=
 		withdrawRequestStore == repository.WithdrawRequestStorePostgres ||
+			withdrawRecordStore == repository.WithdrawRecordStorePostgres ||
 			batchBuildStore == repository.BatchBuildStorePostgres ||
 			proofBundleStore == repository.ProofBundleStorePostgres ||
 			submitBatchStore == repository.SubmitBatchStorePostgres
