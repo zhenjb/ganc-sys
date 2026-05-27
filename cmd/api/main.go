@@ -43,6 +43,7 @@ func main() {
 
 	batchBuilderMode := getenv("BATCH_BUILDER_MODE", BatchBuilderModeLocal)
 	batchBuildSource := getenv("BATCH_BUILD_SOURCE", service.BatchBuildSourceManual)
+	offchainSettlementEnabled := getenv("OFFCHAIN_SETTLEMENT_ENABLED", "false") == "true"
 
 	dbPool := openDatabaseIfNeeded(
 		withdrawRequestStore,
@@ -51,6 +52,7 @@ func main() {
 		proofBundleStore,
 		submitBatchStore,
 		batchBuildSource,
+		offchainSettlementEnabled,
 	)
 	if dbPool != nil {
 		defer dbPool.Close()
@@ -85,7 +87,17 @@ func main() {
 		chainQueryClient,
 		chainQueryMode,
 	)
-	depositIndexer := indexer.NewDepositIndexer(depositRepository)
+
+	var depositIndexer *indexer.DepositIndexer
+	if offchainSettlementEnabled {
+		depositIndexer = indexer.NewDepositIndexerWithOffchainSettlement(
+			depositRepository,
+			offchainSettlementService,
+		)
+	} else {
+		depositIndexer = indexer.NewDepositIndexer(depositRepository)
+	}
+
 	depositService := service.NewDepositService(depositRepository, depositIndexer, chainClient)
 	depositHandler := handler.NewDepositHandler(depositService)
 
@@ -148,6 +160,7 @@ func main() {
 	log.Printf("submit batch store=%s", submitBatchStore)
 	log.Printf("batch builder mode=%s", batchBuilderMode)
 	log.Printf("batch build source=%s", batchBuildSource)
+	log.Printf("offchain settlement enabled=%v", offchainSettlementEnabled)
 
 	if err := http.ListenAndServe(addr, router.Routes()); err != nil {
 		log.Fatal(err)
@@ -176,6 +189,7 @@ func openDatabaseIfNeeded(
 	proofBundleStore string,
 	submitBatchStore string,
 	batchBuildSource string,
+	offchainSettlementEnabled bool,
 ) *pgxpool.Pool {
 	needsDB :=
 		withdrawRequestStore == repository.WithdrawRequestStorePostgres ||
@@ -183,7 +197,8 @@ func openDatabaseIfNeeded(
 			batchBuildStore == repository.BatchBuildStorePostgres ||
 			proofBundleStore == repository.ProofBundleStorePostgres ||
 			submitBatchStore == repository.SubmitBatchStorePostgres ||
-			batchBuildSource == service.BatchBuildSourcePending
+			batchBuildSource == service.BatchBuildSourcePending ||
+			offchainSettlementEnabled
 
 	if !needsDB {
 		return nil

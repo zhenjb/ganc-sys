@@ -10,6 +10,18 @@ import (
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
 
+// IndexedDepositApplier is the narrow boundary from the deposit indexer into
+// P3's off-chain settlement state.
+//
+// The real implementation is service.OffchainSettlementService.
+// This interface lives in indexer package to avoid an import cycle:
+//
+// service -> indexer
+// indexer -> service would be illegal
+type IndexedDepositApplier interface {
+	ApplyIndexedDeposit(ctx context.Context, deposit types.DepositRecord) (repository.PendingDepositTransition, error)
+}
+
 // DepositIndexer consumes on-chain deposit events and creates a local
 // DepositRecord mirror for P3 batch builder and P5 UI.
 //
@@ -20,13 +32,29 @@ import (
 //
 // TxHash and CreatedHeight do not come from EventDeposit itself.
 // They are enriched from TxResult.
+//
+// P3INT-06:
+// If an IndexedDepositApplier is configured, the indexed DepositRecord is also
+// applied into the off-chain settlement state and persisted as a pending
+// deposit transition.
 type DepositIndexer struct {
 	depositRepository *repository.DepositRepository
+	indexedApplier    IndexedDepositApplier
 }
 
 func NewDepositIndexer(depositRepository *repository.DepositRepository) *DepositIndexer {
 	return &DepositIndexer{
 		depositRepository: depositRepository,
+	}
+}
+
+func NewDepositIndexerWithOffchainSettlement(
+	depositRepository *repository.DepositRepository,
+	indexedApplier IndexedDepositApplier,
+) *DepositIndexer {
+	return &DepositIndexer{
+		depositRepository: depositRepository,
+		indexedApplier:    indexedApplier,
 	}
 }
 
@@ -42,6 +70,13 @@ func (i *DepositIndexer) IndexDepositFromTx(ctx context.Context, tx chain.TxResu
 		}
 
 		i.depositRepository.SaveDeposit(ctx, record)
+
+		if i.indexedApplier != nil {
+			if _, err := i.indexedApplier.ApplyIndexedDeposit(ctx, record); err != nil {
+				return types.DepositRecord{}, err
+			}
+		}
+
 		return record, nil
 	}
 
