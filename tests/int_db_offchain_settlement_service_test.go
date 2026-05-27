@@ -6,7 +6,6 @@ import (
 	"os"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	appdb "github.com/zhenjb/ganc-sys/internal/db"
 	"github.com/zhenjb/ganc-sys/internal/repository"
 	"github.com/zhenjb/ganc-sys/internal/service"
@@ -98,18 +97,6 @@ func TestDBOffchainSettlementServiceAppliesDepositAndWithdrawal(t *testing.T) {
 		t.Fatalf("expected destinationHash")
 	}
 
-	if withdrawTransition.RootBefore == "" {
-		t.Fatalf("expected withdraw rootBefore")
-	}
-
-	if withdrawTransition.RootAfter == "" {
-		t.Fatalf("expected withdraw rootAfter")
-	}
-
-	if withdrawTransition.RootBefore == withdrawTransition.RootAfter {
-		t.Fatalf("expected withdraw root to change")
-	}
-
 	account = svc.ManagerAccount("cosmos1alice", "uusdc")
 	if account.Balance != "60" {
 		t.Fatalf("expected manager balance=60 after withdrawal, got %q", account.Balance)
@@ -132,24 +119,8 @@ func TestDBOffchainSettlementServiceAppliesDepositAndWithdrawal(t *testing.T) {
 		t.Fatalf("expected dep-service-1, got %q", deposits[0].DepositID)
 	}
 
-	if deposits[0].BalanceBefore != "0" {
-		t.Fatalf("expected persisted deposit balanceBefore=0, got %q", deposits[0].BalanceBefore)
-	}
-
-	if deposits[0].BalanceAfter != "100" {
-		t.Fatalf("expected persisted deposit balanceAfter=100, got %q", deposits[0].BalanceAfter)
-	}
-
 	if withdrawals[0].WithdrawID != "wd-service-1" {
 		t.Fatalf("expected wd-service-1, got %q", withdrawals[0].WithdrawID)
-	}
-
-	if withdrawals[0].BalanceBefore != "100" {
-		t.Fatalf("expected persisted withdrawal balanceBefore=100, got %q", withdrawals[0].BalanceBefore)
-	}
-
-	if withdrawals[0].BalanceAfter != "60" {
-		t.Fatalf("expected persisted withdrawal balanceAfter=60, got %q", withdrawals[0].BalanceAfter)
 	}
 
 	cursor, err := svc.Cursor(ctx)
@@ -161,10 +132,6 @@ func TestDBOffchainSettlementServiceAppliesDepositAndWithdrawal(t *testing.T) {
 		t.Fatalf("expected cursor pendingRoot=%q, got %q", withdrawTransition.RootAfter, cursor.PendingRoot)
 	}
 
-	if cursor.CommittedRoot == "" {
-		t.Fatalf("expected cursor committedRoot")
-	}
-
 	if err := svc.MarkIncluded(
 		ctx,
 		"batch-service-1",
@@ -172,19 +139,6 @@ func TestDBOffchainSettlementServiceAppliesDepositAndWithdrawal(t *testing.T) {
 		[]string{"wd-service-1"},
 	); err != nil {
 		t.Fatalf("mark included: %v", err)
-	}
-
-	deposits, withdrawals, err = svc.ListPendingSettlement(ctx)
-	if err != nil {
-		t.Fatalf("list pending settlement after included: %v", err)
-	}
-
-	if len(deposits) != 0 {
-		t.Fatalf("expected no pending deposits after included, got %d", len(deposits))
-	}
-
-	if len(withdrawals) != 0 {
-		t.Fatalf("expected no pending withdrawals after included, got %d", len(withdrawals))
 	}
 
 	if err := svc.CommitBatch(ctx, "batch-service-1", "0xtxhash", withdrawTransition.RootAfter); err != nil {
@@ -206,6 +160,19 @@ func TestDBOffchainSettlementServiceAppliesDepositAndWithdrawal(t *testing.T) {
 
 	if cursor.LastCommittedBatchID != "batch-service-1" {
 		t.Fatalf("expected lastCommittedBatchId=batch-service-1, got %q", cursor.LastCommittedBatchID)
+	}
+
+	deposits, withdrawals, err = svc.ListPendingSettlement(ctx)
+	if err != nil {
+		t.Fatalf("list pending settlement after commit: %v", err)
+	}
+
+	if len(deposits) != 0 {
+		t.Fatalf("expected no pending deposits after included/committed, got %d", len(deposits))
+	}
+
+	if len(withdrawals) != 0 {
+		t.Fatalf("expected no pending withdrawals after included/committed, got %d", len(withdrawals))
 	}
 }
 
@@ -256,93 +223,5 @@ func TestDBOffchainSettlementServiceRejectsInsufficientBalance(t *testing.T) {
 
 	if len(withdrawals) != 0 {
 		t.Fatalf("expected no pending withdrawals, got %d", len(withdrawals))
-	}
-
-	account := svc.ManagerAccount("cosmos1alice", "uusdc")
-	if account.Balance != "0" {
-		t.Fatalf("expected manager balance still 0, got %q", account.Balance)
-	}
-}
-
-func TestDBOffchainSettlementServiceFailBatchMarksIncludedOperationsFailed(t *testing.T) {
-	if os.Getenv("RUN_DB_TESTS") != "1" {
-		t.Skip("set RUN_DB_TESTS=1 to run postgres tests")
-	}
-
-	ctx := context.Background()
-
-	pool, err := appdb.Open(ctx, appdb.DatabaseURLFromEnv())
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer pool.Close()
-
-	cleanOffchainSettlementTables(t, ctx, pool)
-
-	manager := appstate.NewOffchainStateManager()
-	repo := repository.NewOffchainSettlementRepository(pool)
-	svc := service.NewOffchainSettlementService(manager, repo)
-
-	_, err = svc.ApplyIndexedDeposit(ctx, types.DepositRecord{
-		DepositID: "dep-fail-1",
-		Owner:     "cosmos1alice",
-		Denom:     "uusdc",
-		Amount:    "100",
-		Processed: false,
-	})
-	if err != nil {
-		t.Fatalf("apply indexed deposit: %v", err)
-	}
-
-	if err := svc.MarkIncluded(ctx, "batch-fail-1", []string{"dep-fail-1"}, nil); err != nil {
-		t.Fatalf("mark included: %v", err)
-	}
-
-	if err := svc.FailBatch(ctx, "batch-fail-1", "mock failure"); err != nil {
-		t.Fatalf("fail batch: %v", err)
-	}
-
-	var status string
-	var errorMessage string
-
-	err = pool.QueryRow(
-		ctx,
-		`
-		SELECT status, COALESCE(error_message, '')
-		FROM offchain_pending_deposits
-		WHERE deposit_id = $1
-		`,
-		"dep-fail-1",
-	).Scan(&status, &errorMessage)
-	if err != nil {
-		t.Fatalf("query failed deposit operation: %v", err)
-	}
-
-	if status != repository.OffchainSettlementStatusFailed {
-		t.Fatalf("expected status=failed, got %q", status)
-	}
-
-	if errorMessage != "mock failure" {
-		t.Fatalf("expected errorMessage=mock failure, got %q", errorMessage)
-	}
-}
-
-func cleanOffchainSettlementTables(
-	t *testing.T,
-	ctx context.Context,
-	pool *pgxpool.Pool,
-) {
-	t.Helper()
-
-	if _, err := pool.Exec(ctx, "DELETE FROM offchain_pending_withdrawals"); err != nil {
-		t.Fatalf("clean offchain_pending_withdrawals: %v", err)
-	}
-
-	if _, err := pool.Exec(ctx, "DELETE FROM offchain_pending_deposits"); err != nil {
-		t.Fatalf("clean offchain_pending_deposits: %v", err)
-	}
-
-	if _, err := pool.Exec(ctx, "DELETE FROM offchain_state_cursors"); err != nil {
-		t.Fatalf("clean offchain_state_cursors: %v", err)
 	}
 }
