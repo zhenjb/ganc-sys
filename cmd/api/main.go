@@ -18,7 +18,7 @@ import (
 	"github.com/zhenjb/ganc-sys/internal/relayer"
 	"github.com/zhenjb/ganc-sys/internal/repository"
 	"github.com/zhenjb/ganc-sys/internal/service"
-	"github.com/zhenjb/ganc-sys/internal/state"
+	appstate "github.com/zhenjb/ganc-sys/internal/state"
 	"github.com/zhenjb/ganc-sys/internal/store"
 )
 
@@ -29,7 +29,7 @@ func main() {
 	port := getenv("PORT", "8080")
 
 	memoryStore := store.NewMemoryStore()
-	offchainStateManager := state.NewOffchainStateManager()
+	offchainStateManager := appstate.NewOffchainStateManager()
 
 	chainQueryMode := getenv("CHAIN_QUERY_MODE", "local")
 	chainRESTURL := getenv("CHAIN_REST_URL", "http://localhost:1317")
@@ -40,7 +40,9 @@ func main() {
 	batchBuildStore := getenv("BATCH_BUILD_STORE", repository.BatchBuildStoreMemory)
 	proofBundleStore := getenv("PROOF_BUNDLE_STORE", repository.ProofBundleStoreMemory)
 	submitBatchStore := getenv("SUBMIT_BATCH_STORE", repository.SubmitBatchStoreMemory)
+
 	batchBuilderMode := getenv("BATCH_BUILDER_MODE", BatchBuilderModeLocal)
+	batchBuildSource := getenv("BATCH_BUILD_SOURCE", service.BatchBuildSourceManual)
 
 	dbPool := openDatabaseIfNeeded(
 		withdrawRequestStore,
@@ -48,9 +50,19 @@ func main() {
 		batchBuildStore,
 		proofBundleStore,
 		submitBatchStore,
+		batchBuildSource,
 	)
 	if dbPool != nil {
 		defer dbPool.Close()
+	}
+
+	var offchainSettlementService *service.OffchainSettlementService
+	if dbPool != nil {
+		offchainSettlementRepository := repository.NewOffchainSettlementRepository(dbPool)
+		offchainSettlementService = service.NewOffchainSettlementService(
+			offchainStateManager,
+			offchainSettlementRepository,
+		)
 	}
 
 	healthRepository := repository.NewHealthRepository()
@@ -93,12 +105,14 @@ func main() {
 		submitBatchStore,
 	)
 	batchBuilder := newBatchBuilder(batchBuilderMode, offchainStateManager)
-	batchService := service.NewBatchService(
+	batchService := service.NewBatchServiceWithOffchainSettlement(
 		batchRepository,
 		depositRepository,
 		withdrawRepository,
 		batchBuilder,
 		relayerClient,
+		batchBuildSource,
+		offchainSettlementService,
 	)
 	batchHandler := handler.NewBatchHandler(batchService)
 
@@ -133,6 +147,7 @@ func main() {
 	log.Printf("proof bundle store=%s", proofBundleStore)
 	log.Printf("submit batch store=%s", submitBatchStore)
 	log.Printf("batch builder mode=%s", batchBuilderMode)
+	log.Printf("batch build source=%s", batchBuildSource)
 
 	if err := http.ListenAndServe(addr, router.Routes()); err != nil {
 		log.Fatal(err)
@@ -141,7 +156,7 @@ func main() {
 
 func newBatchBuilder(
 	mode string,
-	offchainStateManager *state.OffchainStateManager,
+	offchainStateManager *appstate.OffchainStateManager,
 ) batch.Builder {
 	switch mode {
 	case BatchBuilderModeSnapshot:
@@ -160,13 +175,15 @@ func openDatabaseIfNeeded(
 	batchBuildStore string,
 	proofBundleStore string,
 	submitBatchStore string,
+	batchBuildSource string,
 ) *pgxpool.Pool {
 	needsDB :=
 		withdrawRequestStore == repository.WithdrawRequestStorePostgres ||
 			withdrawRecordStore == repository.WithdrawRecordStorePostgres ||
 			batchBuildStore == repository.BatchBuildStorePostgres ||
 			proofBundleStore == repository.ProofBundleStorePostgres ||
-			submitBatchStore == repository.SubmitBatchStorePostgres
+			submitBatchStore == repository.SubmitBatchStorePostgres ||
+			batchBuildSource == service.BatchBuildSourcePending
 
 	if !needsDB {
 		return nil

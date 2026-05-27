@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 
 	batchbuilder "github.com/zhenjb/ganc-sys/internal/batch"
 	"github.com/zhenjb/ganc-sys/internal/relayer"
@@ -9,10 +10,17 @@ import (
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
 
+const (
+	BatchBuildSourceManual  = "manual"
+	BatchBuildSourcePending = "pending"
+)
+
+var ErrOffchainSettlementServiceRequired = errors.New("offchain settlement service is required for pending batch build source")
+
 // BatchService owns batch endpoint orchestration.
 //
 // P4 owns this service as integration glue.
-// P3 owns the actual batch builder implementation behind batch.Builder.
+// P3 owns the actual batch builder / off-chain settlement implementation.
 // P1 owns the actual batch submit implementation behind relayer.Client.
 type BatchService struct {
 	batchRepository    *repository.BatchRepository
@@ -20,6 +28,9 @@ type BatchService struct {
 	withdrawRepository *repository.WithdrawRepository
 	batchBuilder       batchbuilder.Builder
 	relayerClient      relayer.Client
+
+	buildSource               string
+	offchainSettlementService *OffchainSettlementService
 }
 
 func NewBatchService(
@@ -35,10 +46,43 @@ func NewBatchService(
 		withdrawRepository: withdrawRepository,
 		batchBuilder:       batchBuilder,
 		relayerClient:      relayerClient,
+		buildSource:        BatchBuildSourceManual,
+	}
+}
+
+func NewBatchServiceWithOffchainSettlement(
+	batchRepository *repository.BatchRepository,
+	depositRepository *repository.DepositRepository,
+	withdrawRepository *repository.WithdrawRepository,
+	batchBuilder batchbuilder.Builder,
+	relayerClient relayer.Client,
+	buildSource string,
+	offchainSettlementService *OffchainSettlementService,
+) *BatchService {
+	if buildSource == "" {
+		buildSource = BatchBuildSourceManual
+	}
+
+	return &BatchService{
+		batchRepository:           batchRepository,
+		depositRepository:         depositRepository,
+		withdrawRepository:        withdrawRepository,
+		batchBuilder:              batchBuilder,
+		relayerClient:             relayerClient,
+		buildSource:               buildSource,
+		offchainSettlementService: offchainSettlementService,
 	}
 }
 
 func (s *BatchService) BuildBatch(ctx context.Context, req types.BuildBatchRequestBody) (types.BuildBatchResponse, error) {
+	if s.buildSource == BatchBuildSourcePending {
+		return s.buildPendingBatch(ctx)
+	}
+
+	return s.buildManualBatch(ctx, req)
+}
+
+func (s *BatchService) buildManualBatch(ctx context.Context, req types.BuildBatchRequestBody) (types.BuildBatchResponse, error) {
 	deposits := make([]types.DepositRecord, 0, len(req.DepositIDs))
 	for _, depositID := range req.DepositIDs {
 		deposit, err := s.depositRepository.GetDeposit(ctx, depositID)
@@ -59,10 +103,6 @@ func (s *BatchService) BuildBatch(ctx context.Context, req types.BuildBatchReque
 		withdrawRequests = append(withdrawRequests, withdrawReq)
 	}
 
-	// P4 integration point:
-	// This calls the P3 batch builder interface.
-	// Today this is wired to batch.LocalBuilder.
-	// Later it should be replaced with P3's real implementation.
 	output, err := s.batchBuilder.Build(ctx, batchbuilder.BuildInput{
 		OldStateRoot:     "0xrootA",
 		Deposits:         deposits,
@@ -91,11 +131,36 @@ func (s *BatchService) BuildBatch(ctx context.Context, req types.BuildBatchReque
 	}, nil
 }
 
+func (s *BatchService) buildPendingBatch(ctx context.Context) (types.BuildBatchResponse, error) {
+	if s.offchainSettlementService == nil {
+		return types.BuildBatchResponse{}, ErrOffchainSettlementServiceRequired
+	}
+
+	output, err := s.offchainSettlementService.BuildPendingBatch(ctx, nil)
+	if err != nil {
+		return types.BuildBatchResponse{}, err
+	}
+
+	s.batchRepository.SaveBatchBuild(
+		ctx,
+		output.SettlementUpdate,
+		output.BatchCommitments,
+		output.Witness,
+	)
+
+	return types.BuildBatchResponse{
+		SettlementUpdate: output.SettlementUpdate,
+		BatchCommitments: output.BatchCommitments,
+		Witness:          output.Witness,
+		State: types.PartialState{
+			BatchStatus:    "built",
+			ProofStatus:    "idle",
+			WithdrawStatus: "batchBuilt",
+		},
+	}, nil
+}
+
 func (s *BatchService) SubmitBatch(ctx context.Context, req types.SubmitBatchRequestBody) (types.SubmitBatchResponse, error) {
-	// P4 integration point:
-	// This calls the P1 relayer/chain submit interface.
-	// Today this is wired to relayer.LocalClient.
-	// Later it should submit MsgSubmitBatchProof to x/zkdex.
 	result, err := s.relayerClient.SubmitBatch(ctx, relayer.SubmitBatchInput{
 		SettlementUpdate: req.SettlementUpdate,
 		BatchCommitments: req.BatchCommitments,
