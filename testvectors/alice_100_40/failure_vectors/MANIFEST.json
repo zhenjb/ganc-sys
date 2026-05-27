@@ -1,0 +1,62 @@
+{
+  "scenario": "alice_100_40",
+  "subfolder": "failure_vectors",
+  "description": "STATE-12 — bốn negative vector canonical cho luồng Alice 100/40. Mỗi file là một input PHẢI bị reject ở stage chỉ định.",
+  "vectorVersion": "v0",
+  "hashAlgorithm": "sha256",
+  "generator": "p3/script-test/gen_state_vectors",
+  "happyPathRoots": {
+    "rootA": "0xe4029e127d0d318624204f91c87aed84377819b97f1c80cc53edf9b35840805d",
+    "rootB": "0x9b325b4150d417adfd816930b6f291aaf9493995fe0f960864c616ff178f8620",
+    "rootC": "0x44d60f77db879799be6212c46d198243cbe2fe2969901ca3663dfb204276250c"
+  },
+  "files": [
+    {
+      "name": "duplicate_nullifier.json",
+      "case": "duplicate_nullifier",
+      "schema": "DuplicateNullifierVector",
+      "consumers": [
+        "P1",
+        "P3",
+        "P4"
+      ],
+      "sha256": "0x3174731eddb1d654b190d1df8b0b7af67cf0a9bdcdb058e073b554fee617d52f",
+      "note": "Reject ở chain dup check (ONCHAIN-08) HOẶC state.ErrWithdrawAlreadyApplied khi apply tuần tự."
+    },
+    {
+      "name": "over_withdraw.json",
+      "case": "over_withdraw",
+      "schema": "OverWithdrawVector",
+      "consumers": [
+        "P3",
+        "P4"
+      ],
+      "sha256": "0xa2dedeed51a6a6e53e887deae10835945d1acc4bd310c8ae5ff9a091d4e01571",
+      "note": "STATE-04 builder reject ngay balance check, không cần invoke STATE-05."
+    },
+    {
+      "name": "tampered_destination.json",
+      "case": "tampered_destination",
+      "schema": "TamperedDestinationVector",
+      "consumers": [
+        "P1",
+        "P2",
+        "P4"
+      ],
+      "sha256": "0x4a57a9c6d830d52e51cf9ff418b695211bccab8120a85380fa3f3f707315729a",
+      "note": "Reject ở ZK circuit binding (ZK-07) hoặc P1 verifier on-chain recompute hash."
+    },
+    {
+      "name": "wrong_root.json",
+      "case": "wrong_root",
+      "schema": "WrongRootVector",
+      "consumers": [
+        "P1",
+        "P4"
+      ],
+      "sha256": "0xf1f0989bb8d3c0b771631bb59a703dd0da0155df8eddb28769668f1cea685bfa",
+      "note": "Reject ở ONCHAIN-08 (chain), không phải ở P3 builder."
+    }
+  ],
+  "note": "STATE-12 — file inventory + SHA-256 cho failure_vectors. KHÔNG hand-edit; chạy `go run ./p3/script-test/gen_state_vectors` để regenerate."
+}

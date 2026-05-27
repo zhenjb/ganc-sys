@@ -1,0 +1,57 @@
+{
+  "case": "wrong_root",
+  "title": "Wrong root — relayer submit SettlementUpdate.OldStateRoot lệch",
+  "description": "Settlement update giữ nguyên deposits/withdrawals của batch-1 happy path nhưng OldStateRoot bị thay bằng giá trị placeholder (KHÔNG khớp currentStateRoot=rootB của chain). Chain verifier phải reject TRƯỚC khi gọi VerifyProof.",
+  "violatedInvariant": "SettlementUpdate.OldStateRoot == x/zkdex.currentStateRoot",
+  "happyPathReference": "alice_100_40",
+  "mutation": "tamperedSettlement.OldStateRoot = SHA256('STATE-12/wrong_root/oldStateRoot') (deterministic, ≠ rootB).",
+  "rejection": {
+    "stage": "P1 x/zkdex MsgSubmitBatchProof verifier",
+    "sentinel": "x/zkdex: ErrStaleStateRoot (P1 ONCHAIN-08)",
+    "messageContains": "oldStateRoot",
+    "note": "Verifier reject ở ONCHAIN-08 trước khi proof verify chạy. STATE-10 PublicInputBuilder vẫn build được publicInputs[] vì validateHex pass — sai sót về SEMANTIC root chỉ chain mới đối chiếu được."
+  },
+  "consumers": [
+    "P1",
+    "P4"
+  ],
+  "correctOldStateRoot": "0x9b325b4150d417adfd816930b6f291aaf9493995fe0f960864c616ff178f8620",
+  "tamperedSettlement": {
+    "batchId": "batch-1",
+    "oldStateRoot": "0xa8a7a1722e9ac83a6e80bfc921d00fe42ea9090e7cf95d5d1e209f68d37f6cc8",
+    "newStateRoot": "0x44d60f77db879799be6212c46d198243cbe2fe2969901ca3663dfb204276250c",
+    "deposits": [
+      {
+        "depositId": "dep-1",
+        "owner": "cosmos1alice",
+        "denom": "uusdc",
+        "amount": "100"
+      }
+    ],
+    "withdrawals": [
+      {
+        "withdrawId": "wd-1",
+        "owner": "cosmos1alice",
+        "denom": "uusdc",
+        "amount": "40",
+        "destination": "cosmos1alice",
+        "destinationHash": "0xa75ac956249df4c45b83281c5af6187c59df9709fd1c25b5e61b12d71a8eb417",
+        "nullifier": "0x1a1fdf4ccecb7040b7cd7e125226d14ed7717618d996dab969d4cb12550b22f7"
+      }
+    ]
+  },
+  "batchCommitments": {
+    "depositsRoot": "0x5ed1bb5ad7bc2681e3ff91a63f2183052caa6479ba0e9d02d87392d24e1bbc40",
+    "withdrawalsRoot": "0xea5ccc9d188ad7d28786383089d136cc53d4bd9d9a43f755726038e9514efdb1",
+    "nullifiersRoot": "0x13b485d1c819a2ddff2411fbacae9d5e7aa0c6efe8c103189b44554bcab66f21",
+    "withdrawOutputsRoot": "0xce5e12744106271ca8f191db22631016126b96e19653e3884dc8923e1dde8e14"
+  },
+  "publicInputs": [
+    "0xa8a7a1722e9ac83a6e80bfc921d00fe42ea9090e7cf95d5d1e209f68d37f6cc8",
+    "0x44d60f77db879799be6212c46d198243cbe2fe2969901ca3663dfb204276250c",
+    "0x5ed1bb5ad7bc2681e3ff91a63f2183052caa6479ba0e9d02d87392d24e1bbc40",
+    "0xea5ccc9d188ad7d28786383089d136cc53d4bd9d9a43f755726038e9514efdb1",
+    "0x13b485d1c819a2ddff2411fbacae9d5e7aa0c6efe8c103189b44554bcab66f21",
+    "0xce5e12744106271ca8f191db22631016126b96e19653e3884dc8923e1dde8e14"
+  ]
+}

@@ -1,263 +1,304 @@
 package batch
 
 import (
-	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"strconv"
+	"strings"
+	"sync"
 
+	"github.com/zhenjb/ganc-sys/internal/state"
+	"github.com/zhenjb/ganc-sys/pkg/hash"
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
 
-var ErrInsufficientOffchainBalance = errors.New("insufficient off-chain balance")
+// ErrInvalidSettlementInputs là sentinel cho mọi lỗi validation bên
+// trong SettlementUpdateBuilder. Callers chain bằng errors.Is. Một
+// sentinel duy nhất giúp P4 (khi map qua /api/batch/build) chỉ cần một
+// nhánh xử lý → trả HTTP 400 với message gốc.
+var ErrInvalidSettlementInputs = errors.New("batch: invalid settlement inputs")
 
-// Builder is the integration boundary for the P3 batch builder.
+// WithdrawalInput gói một WithdrawRequest cùng với hai trường derived bắt
+// buộc cho batch-shaped settlement:
 //
-// P4 owns:
-// - API endpoint integration,
-// - loading indexed deposits,
-// - loading persisted withdrawal requests,
-// - calling this interface,
-// - returning the output to FE/P2.
+//   - Nullifier: do state.NullifierFor(secret, request.Nonce) sinh ra
+//     ở STATE-06. Phải truyền lại ở đây để builder ghi vào withdrawal
+//     entry và để re-derive của witness builder bind đúng.
+//   - DestinationHash: do state.WithdrawAddressHash(request.Destination)
+//     sinh ra ở STATE-07. Builder sẽ re-derive lại từ request.Destination
+//     và reject nếu mismatch — defense-in-depth chống tampering.
+type WithdrawalInput struct {
+	Request         types.WithdrawRequest
+	Nullifier       string
+	DestinationHash string
+}
+
+// SettlementInputs là batch-shaped input của SettlementUpdateBuilder.
+// Theo Agreements, schema không bao giờ rớt về scalar — kể cả khi
+// canonical Alice vector chỉ có 1 deposit + 1 withdrawal, mảng vẫn giữ
+// nguyên dạng slice để contract đúng từ ngày đầu.
 //
-// P3 owns the real implementation:
-// - off-chain state transition,
-// - balance checks,
-// - newStateRoot,
-// - nullifier computation,
-// - destinationHash,
-// - batch commitments,
-// - witness construction.
-type Builder interface {
-	Build(ctx context.Context, input BuildInput) (BuildOutput, error)
+//   - OldStateRoot: LocalState.Root() trước khi apply mọi withdrawal
+//                   trong batch.
+//   - NewStateRoot: LocalState.Root() sau khi apply toàn bộ batch.
+//   - Deposits:     các DepositRecord (STATE-03) tham gia batch. Owner/
+//                   Denom/Amount phải khớp với những gì STATE-03 dùng
+//                   để credit LocalState.
+//   - Withdrawals:  các WithdrawRequest (STATE-04) tham gia batch,
+//                   kèm Nullifier (STATE-06) và DestinationHash (STATE-07).
+type SettlementInputs struct {
+	OldStateRoot string
+	NewStateRoot string
+	Deposits     []types.DepositRecord
+	Withdrawals  []WithdrawalInput
 }
 
-type BuildInput struct {
-	OldStateRoot     string
-	Deposits         []types.DepositRecord
-	WithdrawRequests []types.WithdrawRequest
-}
-
-type BuildOutput struct {
-	SettlementUpdate types.SettlementUpdate
-	BatchCommitments types.BatchCommitments
-	Witness          types.Witness
-}
-
-// LocalBuilder is a temporary deterministic placeholder for P3 integration.
+// SettlementUpdateBuilder sản xuất SettlementUpdate deterministic,
+// đánh số tuần tự — đây là STATE-08 của pipeline P3. Builder là nơi DUY
+// NHẤT mint BatchID; mọi giá trị khác (roots, ids, amounts, hashes,
+// destination) do caller cung cấp sau khi STATE-03..07 đã tính.
 //
-// TODO(P3):
-// Replace this with the real P3 batch builder implementation.
-// Do not treat this as production batch logic.
-// This exists only so P4/P5/P2 can continue integrating against stable contracts.
-type LocalBuilder struct{}
-
-func NewLocalBuilder() *LocalBuilder {
-	return &LocalBuilder{}
+// Concurrency: Build thread-safe; chỉ có seq counter mutable, được bảo
+// vệ bằng mu. Builder không giữ tham chiếu tới LocalState.
+type SettlementUpdateBuilder struct {
+	mu  sync.Mutex
+	seq uint64
 }
 
-func (b *LocalBuilder) Build(ctx context.Context, input BuildInput) (BuildOutput, error) {
-	if input.OldStateRoot == "" {
-		input.OldStateRoot = "0xrootA"
+func NewSettlementUpdateBuilder() *SettlementUpdateBuilder {
+	return &SettlementUpdateBuilder{}
+}
+
+// Seq trả về số lượng SettlementUpdate đã build (debug/testing).
+func (b *SettlementUpdateBuilder) Seq() uint64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.seq
+}
+
+// Build validate SettlementInputs và assemble một SettlementUpdate
+// canonical.
+//
+// Validation pipeline (mọi failure → ErrInvalidSettlementInputs wrap
+// với cause; không partial mutation):
+//
+//  1. Roots non-empty, hex-prefixed (0x...), strictly khác nhau.
+//  2. Có ÍT NHẤT 1 deposit hoặc 1 withdrawal (batch rỗng bị reject).
+//  3. Mỗi deposit: identity fields non-empty, Amount > 0.
+//  4. Mỗi withdrawal: identity fields non-empty, Amount > 0, Nonce >= 0;
+//     Nullifier và DestinationHash non-empty + hex-prefixed.
+//  5. Single-denom invariant: mọi deposit & withdrawal cùng denom
+//     (MVP — circuit ZK-04 được viết cho shape này).
+//  6. Re-derive DestinationHash từ Withdraw.Destination qua
+//     state.WithdrawAddressHash và assert equality với supplied hash.
+//
+// Post-conditions on success:
+//   - BatchID = "batch-N" với N là post-increment seq counter.
+//   - Mọi amount normalize qua big.Int ("0100" → "100").
+//   - Owner/denom/destination giữ verbatim (đã trim ở STATE-03/04).
+func (b *SettlementUpdateBuilder) Build(in SettlementInputs) (types.SettlementUpdate, error) {
+	if err := validateRoot(in.OldStateRoot, "oldStateRoot"); err != nil {
+		return types.SettlementUpdate{}, err
+	}
+	if err := validateRoot(in.NewStateRoot, "newStateRoot"); err != nil {
+		return types.SettlementUpdate{}, err
+	}
+	if in.OldStateRoot == in.NewStateRoot {
+		return types.SettlementUpdate{}, fmt.Errorf("%w: oldStateRoot == newStateRoot (no-op batch)", ErrInvalidSettlementInputs)
 	}
 
-	accountStates, err := buildLocalAccountStates(input.Deposits, input.WithdrawRequests)
+	if len(in.Deposits) == 0 && len(in.Withdrawals) == 0 {
+		return types.SettlementUpdate{}, fmt.Errorf("%w: empty batch (no deposits, no withdrawals)", ErrInvalidSettlementInputs)
+	}
+
+	denom, err := pickBatchDenom(in)
 	if err != nil {
-		return BuildOutput{}, err
+		return types.SettlementUpdate{}, err
 	}
 
-	settlementDeposits := make([]types.SettlementDeposit, 0, len(input.Deposits))
-	for _, deposit := range input.Deposits {
-		settlementDeposits = append(settlementDeposits, types.SettlementDeposit{
-			DepositID: deposit.DepositID,
-			Owner:     deposit.Owner,
-			Denom:     deposit.Denom,
-			Amount:    deposit.Amount,
+	deposits := make([]types.SettlementDeposit, 0, len(in.Deposits))
+	for i, d := range in.Deposits {
+		amt, err := validateDeposit(d)
+		if err != nil {
+			return types.SettlementUpdate{}, fmt.Errorf("%w (deposits[%d])", err, i)
+		}
+		if d.Denom != denom {
+			return types.SettlementUpdate{}, fmt.Errorf(
+				"%w: deposits[%d].denom=%q != batch denom %q (mixed-denom batches not supported in MVP)",
+				ErrInvalidSettlementInputs, i, d.Denom, denom,
+			)
+		}
+		deposits = append(deposits, types.SettlementDeposit{
+			DepositID: d.DepositID,
+			Owner:     d.Owner,
+			Denom:     d.Denom,
+			Amount:    amt.String(),
 		})
 	}
 
-	settlementWithdrawals := make([]types.SettlementWithdrawal, 0, len(input.WithdrawRequests))
-	for _, withdrawReq := range input.WithdrawRequests {
-		settlementWithdrawals = append(settlementWithdrawals, types.SettlementWithdrawal{
-			WithdrawID:      withdrawReq.WithdrawID,
-			Owner:           withdrawReq.Owner,
-			Denom:           withdrawReq.Denom,
-			Amount:          withdrawReq.Amount,
-			Destination:     withdrawReq.Destination,
-			DestinationHash: localHash("destination", withdrawReq.Destination),
-			Nullifier:       localHash("nullifier", withdrawReq.Owner, withdrawReq.Nonce),
+	withdrawals := make([]types.SettlementWithdrawal, 0, len(in.Withdrawals))
+	for i, w := range in.Withdrawals {
+		amt, err := validateWithdraw(w.Request)
+		if err != nil {
+			return types.SettlementUpdate{}, fmt.Errorf("%w (withdrawals[%d])", err, i)
+		}
+		if w.Request.Denom != denom {
+			return types.SettlementUpdate{}, fmt.Errorf(
+				"%w: withdrawals[%d].denom=%q != batch denom %q (mixed-denom batches not supported in MVP)",
+				ErrInvalidSettlementInputs, i, w.Request.Denom, denom,
+			)
+		}
+		if err := validateHex(w.Nullifier, fmt.Sprintf("withdrawals[%d].nullifier", i)); err != nil {
+			return types.SettlementUpdate{}, err
+		}
+		if err := validateHex(w.DestinationHash, fmt.Sprintf("withdrawals[%d].destinationHash", i)); err != nil {
+			return types.SettlementUpdate{}, err
+		}
+		rederived, err := state.WithdrawAddressHash(w.Request.Destination)
+		if err != nil {
+			return types.SettlementUpdate{}, fmt.Errorf(
+				"%w: withdrawals[%d] cannot re-derive destinationHash from destination %q: %v",
+				ErrInvalidSettlementInputs, i, w.Request.Destination, err,
+			)
+		}
+		if rederived != w.DestinationHash {
+			return types.SettlementUpdate{}, fmt.Errorf(
+				"%w: withdrawals[%d].destinationHash mismatch: supplied=%s, re-derived(destination=%q)=%s",
+				ErrInvalidSettlementInputs, i, w.DestinationHash, w.Request.Destination, rederived,
+			)
+		}
+		withdrawals = append(withdrawals, types.SettlementWithdrawal{
+			WithdrawID:      w.Request.WithdrawID,
+			Owner:           w.Request.Owner,
+			Denom:           w.Request.Denom,
+			Amount:          amt.String(),
+			Destination:     w.Request.Destination,
+			DestinationHash: w.DestinationHash,
+			Nullifier:       w.Nullifier,
 		})
 	}
 
-	witnessAccounts := make([]types.WitnessAccount, 0, len(accountStates))
-	for _, state := range accountStates {
-		witnessAccounts = append(witnessAccounts, types.WitnessAccount{
-			Owner:      state.Owner,
-			UserSecret: "mock-user-secret",
-			Nonce:      state.Nonce,
-			OldBalance: strconv.FormatInt(state.OldBalance, 10),
-			NewBalance: strconv.FormatInt(state.NewBalance, 10),
-		})
-	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.seq++
 
-	commitments := types.BatchCommitments{
-		DepositsRoot:        hashJSON("depositsRoot", settlementDeposits),
-		WithdrawalsRoot:     hashJSON("withdrawalsRoot", settlementWithdrawals),
-		NullifiersRoot:      hashJSON("nullifiersRoot", collectNullifiers(settlementWithdrawals)),
-		WithdrawOutputsRoot: hashJSON("withdrawOutputsRoot", settlementWithdrawals),
-	}
-
-	newStateRoot := hashJSON("newStateRoot", map[string]any{
-		"oldStateRoot": input.OldStateRoot,
-		"accounts":     witnessAccounts,
-		"deposits":     settlementDeposits,
-		"withdrawals":  settlementWithdrawals,
-	})
-
-	settlementUpdate := types.SettlementUpdate{
-		BatchID:      localHash("batch", input.OldStateRoot, commitments.DepositsRoot, commitments.WithdrawalsRoot)[:18],
-		OldStateRoot: input.OldStateRoot,
-		NewStateRoot: newStateRoot,
-		Deposits:     settlementDeposits,
-		Withdrawals:  settlementWithdrawals,
-	}
-
-	return BuildOutput{
-		SettlementUpdate: settlementUpdate,
-		BatchCommitments: commitments,
-		Witness: types.Witness{
-			Accounts: witnessAccounts,
-		},
+	return types.SettlementUpdate{
+		BatchID:      "batch-" + strconv.FormatUint(b.seq, 10),
+		OldStateRoot: in.OldStateRoot,
+		NewStateRoot: in.NewStateRoot,
+		Deposits:     deposits,
+		Withdrawals:  withdrawals,
 	}, nil
 }
 
-type localAccountState struct {
-	Owner      string
-	Nonce      string
-	OldBalance int64
-	NewBalance int64
+// pickBatchDenom enforces single-denom invariant ngay từ entry đầu tiên.
+// Trả về denom chuẩn cho cả batch để các vòng validate sau so sánh.
+func pickBatchDenom(in SettlementInputs) (string, error) {
+	if len(in.Deposits) > 0 {
+		d := strings.TrimSpace(in.Deposits[0].Denom)
+		if d == "" {
+			return "", fmt.Errorf("%w: deposits[0].denom is empty", ErrInvalidSettlementInputs)
+		}
+		return d, nil
+	}
+	w := strings.TrimSpace(in.Withdrawals[0].Request.Denom)
+	if w == "" {
+		return "", fmt.Errorf("%w: withdrawals[0].denom is empty", ErrInvalidSettlementInputs)
+	}
+	return w, nil
 }
 
-// buildLocalAccountStates is placeholder state transition logic.
-//
-// TODO(P3):
-// Replace with the real off-chain state manager and circuit-compatible
-// accounting rules.
-func buildLocalAccountStates(
-	deposits []types.DepositRecord,
-	withdrawRequests []types.WithdrawRequest,
-) ([]localAccountState, error) {
-	type totals struct {
-		owner         string
-		nonce         string
-		totalDeposit  int64
-		totalWithdraw int64
+func validateRoot(root, label string) error {
+	r := strings.TrimSpace(root)
+	if r == "" {
+		return fmt.Errorf("%w: %s is empty", ErrInvalidSettlementInputs, label)
 	}
-
-	byOwner := make(map[string]*totals)
-	order := make([]string, 0)
-
-	ensure := func(owner string) *totals {
-		existing, ok := byOwner[owner]
-		if ok {
-			return existing
-		}
-
-		item := &totals{
-			owner: owner,
-			nonce: "0",
-		}
-
-		byOwner[owner] = item
-		order = append(order, owner)
-
-		return item
+	if !hash.IsHexPrefixed(r) {
+		return fmt.Errorf("%w: %s %q missing 0x prefix", ErrInvalidSettlementInputs, label, r)
 	}
-
-	for _, deposit := range deposits {
-		amount, err := parsePositiveAmount(deposit.Amount)
-		if err != nil {
-			return nil, fmt.Errorf("invalid deposit amount for %s: %w", deposit.DepositID, err)
-		}
-
-		item := ensure(deposit.Owner)
-		item.totalDeposit += amount
+	if len(hash.StripHex(r)) == 0 {
+		return fmt.Errorf("%w: %s %q is empty after stripping 0x prefix", ErrInvalidSettlementInputs, label, r)
 	}
-
-	for _, withdrawReq := range withdrawRequests {
-		amount, err := parsePositiveAmount(withdrawReq.Amount)
-		if err != nil {
-			return nil, fmt.Errorf("invalid withdraw amount for %s: %w", withdrawReq.WithdrawID, err)
-		}
-
-		item := ensure(withdrawReq.Owner)
-		item.totalWithdraw += amount
-		item.nonce = withdrawReq.Nonce
-	}
-
-	states := make([]localAccountState, 0, len(order))
-
-	for _, owner := range order {
-		item := byOwner[owner]
-
-		newBalance := item.totalDeposit - item.totalWithdraw
-		if newBalance < 0 {
-			return nil, ErrInsufficientOffchainBalance
-		}
-
-		states = append(states, localAccountState{
-			Owner:      item.owner,
-			Nonce:      item.nonce,
-			OldBalance: 0,
-			NewBalance: newBalance,
-		})
-	}
-
-	return states, nil
+	return nil
 }
 
-func parsePositiveAmount(value string) (int64, error) {
-	amount, err := strconv.ParseInt(value, 10, 64)
+func validateHex(value, label string) error {
+	v := strings.TrimSpace(value)
+	if v == "" {
+		return fmt.Errorf("%w: %s is empty", ErrInvalidSettlementInputs, label)
+	}
+	if !hash.IsHexPrefixed(v) {
+		return fmt.Errorf("%w: %s %q missing 0x prefix", ErrInvalidSettlementInputs, label, v)
+	}
+	if len(hash.StripHex(v)) == 0 {
+		return fmt.Errorf("%w: %s %q is empty after stripping 0x prefix", ErrInvalidSettlementInputs, label, v)
+	}
+	return nil
+}
+
+func validateDeposit(d types.DepositRecord) (*big.Int, error) {
+	if strings.TrimSpace(d.DepositID) == "" {
+		return nil, fmt.Errorf("%w: deposit.depositId is empty", ErrInvalidSettlementInputs)
+	}
+	if strings.TrimSpace(d.Owner) == "" {
+		return nil, fmt.Errorf("%w: deposit.owner is empty", ErrInvalidSettlementInputs)
+	}
+	if strings.TrimSpace(d.Denom) == "" {
+		return nil, fmt.Errorf("%w: deposit.denom is empty", ErrInvalidSettlementInputs)
+	}
+	amt, err := parsePositive(d.Amount)
 	if err != nil {
-		return 0, err
+		return nil, fmt.Errorf("%w: deposit.amount %q invalid: %v", ErrInvalidSettlementInputs, d.Amount, err)
 	}
-
-	if amount <= 0 {
-		return 0, fmt.Errorf("amount must be positive")
-	}
-
-	return amount, nil
+	return amt, nil
 }
 
-func collectNullifiers(withdrawals []types.SettlementWithdrawal) []string {
-	nullifiers := make([]string, 0, len(withdrawals))
-
-	for _, withdrawal := range withdrawals {
-		nullifiers = append(nullifiers, withdrawal.Nullifier)
+func validateWithdraw(w types.WithdrawRequest) (*big.Int, error) {
+	if strings.TrimSpace(w.WithdrawID) == "" {
+		return nil, fmt.Errorf("%w: withdraw.withdrawId is empty", ErrInvalidSettlementInputs)
 	}
-
-	return nullifiers
-}
-
-func hashJSON(label string, value any) string {
-	raw, err := json.Marshal(value)
+	if strings.TrimSpace(w.Owner) == "" {
+		return nil, fmt.Errorf("%w: withdraw.owner is empty", ErrInvalidSettlementInputs)
+	}
+	if strings.TrimSpace(w.Denom) == "" {
+		return nil, fmt.Errorf("%w: withdraw.denom is empty", ErrInvalidSettlementInputs)
+	}
+	if strings.TrimSpace(w.Destination) == "" {
+		return nil, fmt.Errorf("%w: withdraw.destination is empty", ErrInvalidSettlementInputs)
+	}
+	amt, err := parsePositive(w.Amount)
 	if err != nil {
-		return localHash(label, "marshal-error")
+		return nil, fmt.Errorf("%w: withdraw.amount %q invalid: %v", ErrInvalidSettlementInputs, w.Amount, err)
 	}
-
-	return localHash(label, string(raw))
+	if _, err := parseNonNegative(w.Nonce); err != nil {
+		return nil, fmt.Errorf("%w: withdraw.nonce %q invalid: %v", ErrInvalidSettlementInputs, w.Nonce, err)
+	}
+	return amt, nil
 }
 
-func localHash(parts ...string) string {
-	h := sha256.New()
-
-	for _, part := range parts {
-		h.Write([]byte(part))
-		h.Write([]byte("|"))
+func parsePositive(amount string) (*big.Int, error) {
+	v, err := parseNonNegative(amount)
+	if err != nil {
+		return nil, err
 	}
+	if v.Sign() == 0 {
+		return nil, errors.New("must be > 0")
+	}
+	return v, nil
+}
 
-	return "0x" + hex.EncodeToString(h.Sum(nil))
+func parseNonNegative(amount string) (*big.Int, error) {
+	s := strings.TrimSpace(amount)
+	if s == "" {
+		return nil, errors.New("empty")
+	}
+	v, ok := new(big.Int).SetString(s, 10)
+	if !ok {
+		return nil, errors.New("not a base-10 integer")
+	}
+	if v.Sign() < 0 {
+		return nil, errors.New("negative")
+	}
+	return v, nil
 }

@@ -1,0 +1,15 @@
+{
+  "batchId": "batch-1",
+  "commitments": {
+    "depositsRoot": "0x5ed1bb5ad7bc2681e3ff91a63f2183052caa6479ba0e9d02d87392d24e1bbc40",
+    "withdrawalsRoot": "0xea5ccc9d188ad7d28786383089d136cc53d4bd9d9a43f755726038e9514efdb1",
+    "nullifiersRoot": "0x13b485d1c819a2ddff2411fbacae9d5e7aa0c6efe8c103189b44554bcab66f21",
+    "withdrawOutputsRoot": "0xce5e12744106271ca8f191db22631016126b96e19653e3884dc8923e1dde8e14"
+  },
+  "depositsDomainTag": "zkdex/batch/depositsRoot/v0",
+  "withdrawalsDomainTag": "zkdex/batch/withdrawalsRoot/v0",
+  "nullifiersDomainTag": "zkdex/batch/nullifiersRoot/v0",
+  "withdrawOutputsDomainTag": "zkdex/batch/withdrawOutputsRoot/v0",
+  "hashAlgorithm": "sha256",
+  "note": "STATE-08 (extension) — 4 commitment root bind batch vào proof public inputs[2..5]."
+}

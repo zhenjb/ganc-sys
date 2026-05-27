@@ -1,5 +1,91 @@
 package state
 
-// Nullifier derivation lives here once STATE-06 lands. The hashing rule will
-// match the circuit fixed in ZK-02/ZK-05; this file is intentionally kept as a
-// reserved slot so the package contract is visible.
+import (
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/zhenjb/ganc-sys/pkg/hash"
+)
+
+// nullifierDomainTag is the hash-domain separator for the off-chain
+// nullifier derivation. It MUST match the tag baked into the circuit
+// (ZK-05) — when ZK-02 locks the final hash scheme (likely Poseidon),
+// this tag bumps to "v1" and the canonical test vector is regenerated.
+const nullifierDomainTag = "zkdex/nullifier/v0"
+
+// ErrInvalidNullifierInput is returned when either userSecret or nonce
+// is missing or malformed. Sentinel — callers chain with errors.Is.
+var ErrInvalidNullifierInput = errors.New("state: invalid nullifier input")
+
+// NullifierFor derives the deterministic withdrawal nullifier from a
+// user secret and the withdrawal nonce. This is STATE-06 of the P3
+// pipeline.
+//
+// Contract (canonical for the MVP):
+//
+//	nullifier = H( domain | userSecret | canonical(nonce) )
+//
+// where:
+//   - H is SHA-256 as a placeholder. ZK-02 will swap H to whatever
+//     circuit-friendly hash the final stack picks (Poseidon/MiMC). At
+//     that point, bump nullifierDomainTag from "v0" to "v1" and
+//     regenerate testvectors/alice_100_40/*.
+//   - domain = "zkdex/nullifier/v0" is a fixed string. It
+//     domain-separates this hash from other SHA-256 callsites
+//     (deposit_id hash, tx-hash mock, future commitments) so the same
+//     input bytes cannot collide across uses.
+//   - The separator '|' between fields prevents
+//     (secret="ab", nonce="1") from collapsing onto
+//     (secret="a", nonce="b1") — a classic length-extension /
+//     concatenation pitfall.
+//   - canonical(nonce) is nonce reparsed through parseNonNegativeAmount
+//     and stringified. This normalizes "01" → "1" so two semantically
+//     identical nonces always produce the same nullifier.
+//
+// Output format: "0x"-prefixed lowercase hex (the encoding agreed for
+// proof-bound fields in `zkdex_final_parallel_plan_fixed.html` —
+// roots/nullifiers/proofs as hex strings).
+//
+// Pre-conditions:
+//   - userSecret non-empty after trim. The secret is opaque bytes from
+//     P3 / wallet; we do not interpret it, only require presence.
+//   - nonce is a non-negative integer string. Negative or non-numeric
+//     values return ErrInvalidNullifierInput. Empty rejected.
+//
+// Determinism: same (userSecret, nonce) inputs always return the same
+// nullifier bytes. The function is pure — no LocalState, no mutex, no
+// clock, no randomness.
+//
+// Idempotency role: the returned nullifier is the value
+// LocalState.ApplyWithdrawal (STATE-05) uses as its idempotency key.
+// Re-deriving with the same (secret, nonce) and calling
+// ApplyWithdrawal twice returns ErrWithdrawAlreadyApplied on the
+// second call.
+func NullifierFor(userSecret, nonce string) (string, error) {
+	userSecret = strings.TrimSpace(userSecret)
+	if userSecret == "" {
+		return "", fmt.Errorf("%w: userSecret is empty", ErrInvalidNullifierInput)
+	}
+	parsed, err := parseNonNegativeAmount(nonce)
+	if err != nil {
+		return "", fmt.Errorf("%w: nonce %q invalid: %v", ErrInvalidNullifierInput, nonce, err)
+	}
+	canonicalNonce := parsed.String()
+
+	var b strings.Builder
+	b.Grow(len(nullifierDomainTag) + 1 + len(userSecret) + 1 + len(canonicalNonce))
+	b.WriteString(nullifierDomainTag)
+	b.WriteByte('|')
+	b.WriteString(userSecret)
+	b.WriteByte('|')
+	b.WriteString(canonicalNonce)
+	return hash.SHA256Hex([]byte(b.String())), nil
+}
+
+// NullifierDomainTag exposes the domain tag for cross-role checks
+// (P2 circuit, P4 backend) that need to assert the off-chain
+// derivation has not silently bumped versions.
+func NullifierDomainTag() string {
+	return nullifierDomainTag
+}

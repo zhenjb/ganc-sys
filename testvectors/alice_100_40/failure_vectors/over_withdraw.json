@@ -1,0 +1,30 @@
+{
+  "case": "over_withdraw",
+  "title": "Over-withdraw — Alice cố rút vượt balance",
+  "description": "Alice vừa deposit 100, balance off-chain = 100, nhưng intent ghi amount=200. Bất kỳ pipeline nào dẫn intent qua STATE-04 builder hoặc trực tiếp STATE-05 đều phải reject ngay tại stage validate balance.",
+  "violatedInvariant": "off-chain balance ≥ withdraw amount (state.ErrInsufficientBalance)",
+  "happyPathReference": "alice_100_40",
+  "mutation": "Intent.Amount = '200' (vượt balance=100). Mọi field khác giữ y hệt withdraw_request_wd_1 happy path.",
+  "rejection": {
+    "stage": "STATE-04 WithdrawRequestBuilder",
+    "sentinel": "state.ErrInsufficientBalance",
+    "messageContains": "insufficient balance",
+    "note": "STATE-05 ApplyWithdrawal cũng reject với cùng sentinel nếu pipeline skip STATE-04 và đẩy thẳng request giả mạo (amount=200) vào ApplyWithdrawal."
+  },
+  "consumers": [
+    "P3",
+    "P4"
+  ],
+  "accountSnapshot": {
+    "owner": "cosmos1alice",
+    "denom": "uusdc",
+    "balance": "100",
+    "nonce": "0"
+  },
+  "intent": {
+    "owner": "cosmos1alice",
+    "denom": "uusdc",
+    "amount": "200",
+    "destination": "cosmos1alice"
+  }
+}
