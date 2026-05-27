@@ -31,8 +31,9 @@ func main() {
 	chainQueryClient := chain.NewRestQueryClient(chainRESTURL)
 
 	withdrawRequestStore := getenv("WITHDRAW_REQUEST_STORE", repository.WithdrawRequestStoreMemory)
+	batchBuildStore := getenv("BATCH_BUILD_STORE", repository.BatchBuildStoreMemory)
 
-	dbPool := openDatabaseIfNeeded(withdrawRequestStore)
+	dbPool := openDatabaseIfNeeded(withdrawRequestStore, batchBuildStore)
 	if dbPool != nil {
 		defer dbPool.Close()
 	}
@@ -69,7 +70,11 @@ func main() {
 	withdrawService := service.NewWithdrawService(withdrawRepository, relayerClient)
 	withdrawHandler := handler.NewWithdrawHandler(withdrawService)
 
-	batchRepository := repository.NewBatchRepository(memoryStore)
+	batchRepository := repository.NewBatchRepositoryWithDB(
+		memoryStore,
+		dbPool,
+		batchBuildStore,
+	)
 	batchBuilder := batch.NewLocalBuilder()
 	batchService := service.NewBatchService(
 		batchRepository,
@@ -102,14 +107,19 @@ func main() {
 	log.Printf("ganc-sys backend API listening on http://localhost%s", addr)
 	log.Printf("chain query mode=%s rest=%s", chainQueryMode, chainRESTURL)
 	log.Printf("withdraw request store=%s", withdrawRequestStore)
+	log.Printf("batch build store=%s", batchBuildStore)
 
 	if err := http.ListenAndServe(addr, router.Routes()); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func openDatabaseIfNeeded(withdrawRequestStore string) *pgxpool.Pool {
-	if withdrawRequestStore != repository.WithdrawRequestStorePostgres {
+func openDatabaseIfNeeded(withdrawRequestStore string, batchBuildStore string) *pgxpool.Pool {
+	needsDB :=
+		withdrawRequestStore == repository.WithdrawRequestStorePostgres ||
+			batchBuildStore == repository.BatchBuildStorePostgres
+
+	if !needsDB {
 		return nil
 	}
 

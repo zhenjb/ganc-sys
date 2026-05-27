@@ -72,7 +72,12 @@ func (s *BatchService) BuildBatch(ctx context.Context, req types.BuildBatchReque
 		return types.BuildBatchResponse{}, err
 	}
 
-	s.batchRepository.SaveBatchBuild(ctx, output.SettlementUpdate, output.BatchCommitments)
+	s.batchRepository.SaveBatchBuild(
+		ctx,
+		output.SettlementUpdate,
+		output.BatchCommitments,
+		output.Witness,
+	)
 
 	return types.BuildBatchResponse{
 		SettlementUpdate: output.SettlementUpdate,
