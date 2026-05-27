@@ -17,6 +17,11 @@ import (
 // - POST /api/withdraw/claim claims a submitted withdrawRecord.
 // - unknown withdrawId returns 404.
 // - repeated claim returns 400.
+//
+// P3INT-07:
+//   - POST /api/withdraw-request can also apply the request to the pending
+//     off-chain settlement state when OFFCHAIN_SETTLEMENT_ENABLED=true.
+//   - insufficient pending balance returns HTTP 400.
 type WithdrawHandler struct {
 	withdrawService *service.WithdrawService
 }
@@ -38,7 +43,18 @@ func (h *WithdrawHandler) CreateWithdrawRequest(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	result := h.withdrawService.CreateWithdrawRequest(r.Context(), req)
+	result, err := h.withdrawService.CreateWithdrawRequest(r.Context(), req)
+	if err != nil {
+		switch {
+		case service.IsWithdrawInsufficientBalanceError(err):
+			response.Error(w, http.StatusBadRequest, "insufficient off-chain balance")
+		default:
+			response.Error(w, http.StatusBadRequest, err.Error())
+		}
+
+		return
+	}
+
 	response.JSON(w, http.StatusOK, result)
 }
 

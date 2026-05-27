@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net/http"
 
-	batchbuilder "github.com/zhenjb/ganc-sys/internal/batch"
 	"github.com/zhenjb/ganc-sys/internal/repository"
 	"github.com/zhenjb/ganc-sys/internal/request"
 	"github.com/zhenjb/ganc-sys/internal/response"
@@ -13,10 +12,6 @@ import (
 )
 
 // BatchHandler exposes batch build and submit endpoints.
-//
-// P4 owns the HTTP boundary.
-// P3 owns the builder implementation called by BatchService.
-// P1 owns the relayer/chain submit implementation called by BatchService.
 type BatchHandler struct {
 	batchService *service.BatchService
 }
@@ -33,11 +28,6 @@ func (h *BatchHandler) BuildBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.DepositIDs) == 0 || len(req.WithdrawIDs) == 0 {
-		response.Error(w, http.StatusBadRequest, "depositIds and withdrawIds are required")
-		return
-	}
-
 	result, err := h.batchService.BuildBatch(r.Context(), req)
 	if err != nil {
 		switch {
@@ -45,10 +35,18 @@ func (h *BatchHandler) BuildBatch(w http.ResponseWriter, r *http.Request) {
 			response.Error(w, http.StatusNotFound, "deposit not found")
 		case errors.Is(err, repository.ErrWithdrawRequestNotFound):
 			response.Error(w, http.StatusNotFound, "withdraw request not found")
-		case errors.Is(err, batchbuilder.ErrInsufficientOffchainBalance):
+		case errors.Is(err, service.ErrNoPendingSettlementOperations):
+			response.Error(w, http.StatusBadRequest, "no pending settlement operations")
+		case errors.Is(err, service.ErrOffchainSettlementUnavailable):
+			response.Error(w, http.StatusBadRequest, "offchain settlement service unavailable")
+		case errors.Is(err, service.ErrOffchainSettlementServiceRequired):
+			response.Error(w, http.StatusBadRequest, "offchain settlement service is required")
+		case errors.Is(err, service.ErrManualBatchDepositNotFound):
+			response.Error(w, http.StatusNotFound, "deposit not found")
+		case errors.Is(err, service.ErrManualBatchInsufficientOffchainBalance):
 			response.Error(w, http.StatusBadRequest, "insufficient off-chain balance")
 		default:
-			response.Error(w, http.StatusInternalServerError, err.Error())
+			response.Error(w, http.StatusBadRequest, err.Error())
 		}
 
 		return
@@ -63,10 +61,13 @@ func (h *BatchHandler) SubmitBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.SettlementUpdate.BatchID == "" ||
-		req.BatchCommitments.DepositsRoot == "" ||
-		req.ProofBundle.Proof == "" {
-		response.Error(w, http.StatusBadRequest, "settlementUpdate, batchCommitments and proofBundle are required")
+	if req.SettlementUpdate.BatchID == "" {
+		response.Error(w, http.StatusBadRequest, "settlementUpdate.batchId is required")
+		return
+	}
+
+	if req.ProofBundle.Proof == "" {
+		response.Error(w, http.StatusBadRequest, "proofBundle.proof is required")
 		return
 	}
 

@@ -107,7 +107,12 @@ func main() {
 		withdrawRequestStore,
 		withdrawRecordStore,
 	)
-	withdrawService := service.NewWithdrawService(withdrawRepository, relayerClient)
+	withdrawService := service.NewWithdrawServiceWithOffchainSettlement(
+		withdrawRepository,
+		relayerClient,
+		offchainSettlementEnabled,
+		offchainSettlementService,
+	)
 	withdrawHandler := handler.NewWithdrawHandler(withdrawService)
 
 	batchRepository := repository.NewBatchRepositoryWithDB(

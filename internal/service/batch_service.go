@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 
 	batchbuilder "github.com/zhenjb/ganc-sys/internal/batch"
 	"github.com/zhenjb/ganc-sys/internal/relayer"
@@ -16,6 +17,8 @@ const (
 )
 
 var ErrOffchainSettlementServiceRequired = errors.New("offchain settlement service is required for pending batch build source")
+var ErrManualBatchInsufficientOffchainBalance = errors.New("insufficient off-chain balance")
+var ErrManualBatchDepositNotFound = errors.New("deposit not found")
 
 // BatchService owns batch endpoint orchestration.
 //
@@ -83,11 +86,15 @@ func (s *BatchService) BuildBatch(ctx context.Context, req types.BuildBatchReque
 }
 
 func (s *BatchService) buildManualBatch(ctx context.Context, req types.BuildBatchRequestBody) (types.BuildBatchResponse, error) {
+	if len(req.DepositIDs) == 0 && len(req.WithdrawIDs) == 0 {
+		return types.BuildBatchResponse{}, errors.New("depositIds and withdrawIds are required")
+	}
+
 	deposits := make([]types.DepositRecord, 0, len(req.DepositIDs))
 	for _, depositID := range req.DepositIDs {
 		deposit, err := s.depositRepository.GetDeposit(ctx, depositID)
 		if err != nil {
-			return types.BuildBatchResponse{}, err
+			return types.BuildBatchResponse{}, normalizeManualBatchBuildError(err)
 		}
 
 		deposits = append(deposits, deposit)
@@ -97,7 +104,7 @@ func (s *BatchService) buildManualBatch(ctx context.Context, req types.BuildBatc
 	for _, withdrawID := range req.WithdrawIDs {
 		withdrawReq, err := s.withdrawRepository.GetWithdrawRequest(ctx, withdrawID)
 		if err != nil {
-			return types.BuildBatchResponse{}, err
+			return types.BuildBatchResponse{}, normalizeManualBatchBuildError(err)
 		}
 
 		withdrawRequests = append(withdrawRequests, withdrawReq)
@@ -109,7 +116,7 @@ func (s *BatchService) buildManualBatch(ctx context.Context, req types.BuildBatc
 		WithdrawRequests: withdrawRequests,
 	})
 	if err != nil {
-		return types.BuildBatchResponse{}, err
+		return types.BuildBatchResponse{}, normalizeManualBatchBuildError(err)
 	}
 
 	s.batchRepository.SaveBatchBuild(
@@ -195,4 +202,21 @@ func (s *BatchService) SubmitBatch(ctx context.Context, req types.SubmitBatchReq
 			BatchStatus:      "accepted",
 		},
 	}, nil
+}
+
+func normalizeManualBatchBuildError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	if errors.Is(err, batchbuilder.ErrInsufficientOffchainBalance) {
+		return ErrManualBatchInsufficientOffchainBalance
+	}
+
+	if errors.Is(err, repository.ErrDepositNotFound) ||
+		strings.Contains(err.Error(), "deposit record not found") {
+		return ErrManualBatchDepositNotFound
+	}
+
+	return err
 }
