@@ -45,6 +45,9 @@ func main() {
 	batchBuildSource := getenv("BATCH_BUILD_SOURCE", service.BatchBuildSourceManual)
 	offchainSettlementEnabled := getenv("OFFCHAIN_SETTLEMENT_ENABLED", "false") == "true"
 
+	proverMode := getenv("PROVER_MODE", "local")
+	proverURL := getenv("PROVER_URL", prover.DefaultRemoteProverURL)
+
 	dbPool := openDatabaseIfNeeded(
 		withdrawRequestStore,
 		withdrawRecordStore,
@@ -138,7 +141,7 @@ func main() {
 	)
 	batchHandler := handler.NewBatchHandler(batchService)
 
-	proverClient := prover.NewLocalClient()
+	proverClient := newProverClient(proverMode, proverURL)
 	proofRepository := repository.NewProofRepositoryWithDB(
 		memoryStore,
 		dbPool,
@@ -172,6 +175,10 @@ func main() {
 	log.Printf("batch builder mode=%s", batchBuilderMode)
 	log.Printf("batch build source=%s", batchBuildSource)
 	log.Printf("offchain settlement enabled=%v", offchainSettlementEnabled)
+	log.Printf("prover mode=%s", proverMode)
+	if proverMode == "remote" {
+		log.Printf("prover url=%s", proverURL)
+	}
 
 	if err := http.ListenAndServe(addr, router.Routes()); err != nil {
 		log.Fatal(err)
@@ -190,6 +197,18 @@ func newBatchBuilder(
 	default:
 		log.Printf("unknown BATCH_BUILDER_MODE=%q, falling back to local", mode)
 		return batch.NewLocalBuilder()
+	}
+}
+
+func newProverClient(mode string, remoteURL string) prover.Client {
+	switch mode {
+	case "remote":
+		return prover.NewRemoteClient(remoteURL)
+	case "local":
+		return prover.NewLocalClient()
+	default:
+		log.Printf("unknown PROVER_MODE=%q, falling back to local", mode)
+		return prover.NewLocalClient()
 	}
 }
 
