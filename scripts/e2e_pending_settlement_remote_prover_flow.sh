@@ -24,8 +24,7 @@ echo "============================================================"
 echo "1. Run pending settlement E2E flow"
 echo "============================================================"
 
-flow_output="$(./scripts/e2e_pending_settlement_flow.sh)"
-echo "${flow_output}"
+./scripts/e2e_pending_settlement_flow.sh
 
 echo
 echo "============================================================"
