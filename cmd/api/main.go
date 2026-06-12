@@ -20,6 +20,7 @@ import (
 	"github.com/zhenjb/ganc-sys/internal/service"
 	appstate "github.com/zhenjb/ganc-sys/internal/state"
 	"github.com/zhenjb/ganc-sys/internal/store"
+	"github.com/rs/cors"
 )
 
 const BatchBuilderModeLocal = "local"
@@ -180,7 +181,19 @@ func main() {
 		log.Printf("prover url=%s", proverURL)
 	}
 
-	if err := http.ListenAndServe(addr, router.Routes()); err != nil {
+	// CORS
+	c := cors.New(cors.Options{
+		AllowedOrigins:   []string{"http://localhost:3000"}, // Đổi thành port chạy Frontend của bạn nếu khác
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
+		AllowedHeaders:   []string{"Content-Type", "Authorization"},
+		AllowCredentials: true,
+	})
+
+	// 2. Bọc router.Routes() bằng middleware cors
+	handlerWithCORS := c.Handler(router.Routes())
+
+	// 3. Truyền handler đã có CORS vào đây
+	if err := http.ListenAndServe(addr, handlerWithCORS); err != nil {
 		log.Fatal(err)
 	}
 }
