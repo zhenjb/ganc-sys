@@ -37,6 +37,17 @@ func (s *ProofService) GenerateProof(ctx context.Context, req types.GenerateProo
 		return types.GenerateProofResponse{}, err
 	}
 
+	if artifactProvider, ok := s.proverClient.(prover.VerifierArtifactProvider); ok {
+		artifact, err := artifactProvider.GetVerifierArtifact(ctx)
+		if err != nil {
+			return types.GenerateProofResponse{}, err
+		}
+
+		if err := prover.ValidateProofBundleMatchesVerifierArtifact(proofBundle, artifact); err != nil {
+			return types.GenerateProofResponse{}, err
+		}
+	}
+
 	s.proofRepository.SaveProofBundle(ctx, req.SettlementUpdate.BatchID, proofBundle)
 
 	return types.GenerateProofResponse{

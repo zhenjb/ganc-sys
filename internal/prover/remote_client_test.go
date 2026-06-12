@@ -131,3 +131,45 @@ func TestRemoteClientGenerateProofReturnsRemoteError(t *testing.T) {
 		t.Fatalf("expected remote error")
 	}
 }
+
+func TestRemoteClientGetVerifierArtifact(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/verifier-artifact" {
+			t.Fatalf("expected /verifier-artifact path, got %s", r.URL.Path)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"verificationKeyId": "gazk-balance-smoke-v1",
+			"hashMode": "v0-sha256",
+			"curve": "BN254",
+			"backend": "groth16",
+			"publicInputCount": 6,
+			"publicInputNames": [
+				"settlementUpdate.oldStateRoot",
+				"settlementUpdate.newStateRoot",
+				"batchCommitments.depositsRoot",
+				"batchCommitments.withdrawalsRoot",
+				"batchCommitments.nullifiersRoot",
+				"batchCommitments.withdrawOutputsRoot"
+			],
+			"verifyingKey": "0x1234"
+		}`))
+	}))
+	defer server.Close()
+
+	client := NewRemoteClient(server.URL)
+
+	artifact, err := client.GetVerifierArtifact(context.Background())
+	if err != nil {
+		t.Fatalf("get verifier artifact: %v", err)
+	}
+
+	if artifact.VerificationKeyID != "gazk-balance-smoke-v1" {
+		t.Fatalf("expected gazk-balance-smoke-v1, got %q", artifact.VerificationKeyID)
+	}
+
+	if artifact.PublicInputCount != 6 {
+		t.Fatalf("expected publicInputCount=6, got %d", artifact.PublicInputCount)
+	}
+}

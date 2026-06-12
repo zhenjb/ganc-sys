@@ -113,3 +113,42 @@ type remoteErrorResponse struct {
 }
 
 var _ Client = (*RemoteClient)(nil)
+
+func (c *RemoteClient) GetVerifierArtifact(ctx context.Context) (types.VerifierArtifact, error) {
+	if c.baseURL == "" {
+		return types.VerifierArtifact{}, fmt.Errorf("remote prover base URL is required")
+	}
+
+	url := strings.TrimRight(c.baseURL, "/") + "/verifier-artifact"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return types.VerifierArtifact{}, fmt.Errorf("create remote verifier artifact request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return types.VerifierArtifact{}, fmt.Errorf("call remote verifier artifact endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var errResp remoteErrorResponse
+		if err := json.NewDecoder(resp.Body).Decode(&errResp); err == nil && errResp.Error != "" {
+			return types.VerifierArtifact{}, fmt.Errorf("remote verifier artifact endpoint returned %d: %s", resp.StatusCode, errResp.Error)
+		}
+
+		return types.VerifierArtifact{}, fmt.Errorf("remote verifier artifact endpoint returned status %d", resp.StatusCode)
+	}
+
+	var artifact types.VerifierArtifact
+	if err := json.NewDecoder(resp.Body).Decode(&artifact); err != nil {
+		return types.VerifierArtifact{}, fmt.Errorf("decode remote verifier artifact response: %w", err)
+	}
+
+	if err := ValidateVerifierArtifact(artifact); err != nil {
+		return types.VerifierArtifact{}, err
+	}
+
+	return artifact, nil
+}
