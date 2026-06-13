@@ -259,6 +259,21 @@ func (r *WithdrawRepository) createWithdrawRequestPostgres(
 		Signature:   signature,
 	}
 
+	if err := r.insertWithdrawRequestPostgres(ctx, withdrawRequest); err != nil {
+		return types.WithdrawRequest{}, err
+	}
+
+	return withdrawRequest, nil
+}
+
+// insertWithdrawRequestPostgres persists an already-built WithdrawRequest row.
+// Shared by the legacy createWithdrawRequestPostgres path and by
+// SaveWithdrawRequest (off-chain build→apply→save path).
+func (r *WithdrawRepository) insertWithdrawRequestPostgres(ctx context.Context, wr types.WithdrawRequest) error {
+	if r.dbPool == nil {
+		return errors.New("postgres withdraw request store selected but db pool is nil")
+	}
+
 	_, err := r.dbPool.Exec(
 		ctx,
 		`
@@ -275,19 +290,62 @@ func (r *WithdrawRepository) createWithdrawRequestPostgres(
 		)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, 'requested', NOW())
 		`,
-		withdrawRequest.WithdrawID,
-		withdrawRequest.Owner,
-		withdrawRequest.Denom,
-		withdrawRequest.Amount,
-		withdrawRequest.Destination,
-		withdrawRequest.Nonce,
-		withdrawRequest.Signature,
+		wr.WithdrawID,
+		wr.Owner,
+		wr.Denom,
+		wr.Amount,
+		wr.Destination,
+		wr.Nonce,
+		wr.Signature,
 	)
-	if err != nil {
-		return types.WithdrawRequest{}, err
+	return err
+}
+
+// NextWithdrawID reserves a globally-unique, restart-safe withdrawId from the
+// durable store: the Postgres sequence `withdraw_request_seq` in postgres mode,
+// or the in-process MemoryStore counter otherwise.
+//
+// withdrawId is an identity/persistence concern (P4) and MUST come from the
+// same durable source that backs the withdraw_requests primary key. Sourcing it
+// from an ephemeral in-memory counter (e.g. one that resets each process start)
+// regenerates "wd-1" after a restart and collides with rows persisted by
+// earlier runs — the root cause of the withdraw_requests_pkey duplicate-key
+// violation. Nonce stays a per-account state concern owned by P3.
+func (r *WithdrawRepository) NextWithdrawID(ctx context.Context) (string, error) {
+	if r.requestStore == WithdrawRequestStorePostgres {
+		if r.dbPool == nil {
+			return "", errors.New("postgres withdraw request store selected but db pool is nil")
+		}
+		var seq int64
+		if err := r.dbPool.QueryRow(ctx, "SELECT nextval('withdraw_request_seq')").Scan(&seq); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("wd-%d", seq), nil
 	}
 
-	return withdrawRequest, nil
+	return fmt.Sprintf("wd-%d", r.store.NextWithdrawSequence()), nil
+}
+
+// SaveWithdrawRequest persists a pre-built WithdrawRequest (e.g. one produced by
+// the off-chain manager's STATE-04 builder). If the request carries no
+// signature yet, the MVP local mock signature is attached here (the wallet
+// layer owns real signing). Used by the off-chain path which persists ONLY
+// after a successful ApplyWithdrawRequest, so a rejected request never leaves a
+// phantom row in the store.
+func (r *WithdrawRepository) SaveWithdrawRequest(ctx context.Context, req types.WithdrawRequest) (types.WithdrawRequest, error) {
+	if req.Signature == "" {
+		req.Signature = localWithdrawSignature(req.Owner, req.Denom, req.Amount, req.Destination, req.Nonce)
+	}
+
+	if r.requestStore == WithdrawRequestStorePostgres {
+		if err := r.insertWithdrawRequestPostgres(ctx, req); err != nil {
+			return types.WithdrawRequest{}, err
+		}
+		return req, nil
+	}
+
+	r.store.SaveWithdrawRequest(req)
+	return req, nil
 }
 
 func (r *WithdrawRepository) getWithdrawRequestPostgres(

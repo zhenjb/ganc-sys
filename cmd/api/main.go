@@ -71,6 +71,15 @@ func main() {
 		)
 	}
 
+	// Rebuild the in-memory off-chain state from the durable pending tables so a
+	// restart does not regenerate already-consumed nonces/nullifiers and collide
+	// with persisted unique constraints. Must run before serving any request.
+	if offchainSettlementEnabled && offchainSettlementService != nil {
+		if err := offchainSettlementService.RehydrateFromStore(context.Background()); err != nil {
+			log.Printf("offchain settlement rehydrate failed: %v", err)
+		}
+	}
+
 	var offchainSettlementHandler *handler.OffchainSettlementHandler
 	if offchainSettlementService != nil {
 		offchainSettlementHandler = handler.NewOffchainSettlementHandler(offchainSettlementService)

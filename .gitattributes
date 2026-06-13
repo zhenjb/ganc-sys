@@ -1,0 +1,7 @@
+# Canonical ZK test vectors (STATE-11/12) are hashed byte-for-byte over LF
+# content by the generator (p3/script-test/gen_state_vectors) and recorded in
+# MANIFEST.json. On Windows, core.autocrlf=true rewrites LF->CRLF on checkout,
+# which makes every recorded SHA-256 mismatch and the determinism test
+# (pkg/testvectors) fail. Pin these files to LF so they hash identically on
+# every platform.
+testvectors/** text eol=lf

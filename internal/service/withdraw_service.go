@@ -65,22 +65,58 @@ func (s *WithdrawService) CreateWithdrawRequest(
 	ctx context.Context,
 	req types.WithdrawRequestBody,
 ) (types.WithdrawRequestResponse, error) {
-	withdrawReq := s.withdrawRepository.CreateWithdrawRequest(ctx, req)
-
 	if s.offchainSettlementEnabled {
 		if s.offchainSettlementService == nil {
 			return types.WithdrawRequestResponse{}, ErrOffchainSettlementUnavailable
 		}
 
-		_, err := s.offchainSettlementService.ApplyWithdrawRequest(
-			ctx,
-			withdrawReq,
-			withdrawDefaultUserSecret,
-		)
+		// Reserve a durable, restart-safe withdrawId from the store (P4 owns
+		// identity). Sourcing the id from the same persistent sequence that
+		// backs the withdraw_requests primary key prevents duplicate-key
+		// collisions with rows persisted by earlier process runs.
+		withdrawID, err := s.withdrawRepository.NextWithdrawID(ctx)
 		if err != nil {
 			return types.WithdrawRequestResponse{}, err
 		}
+
+		// STATE-04 (P3): build the request with a per-account nonce
+		// (account.Nonce + 1), validating balance early. The nonce is sourced
+		// from the same off-chain account state that ApplyWithdrawRequest
+		// validates against — never a global counter. Identity (withdrawID)
+		// comes from the durable store above, not from P3.
+		withdrawReq, err := s.offchainSettlementService.BuildWithdrawRequest(req, withdrawID)
+		if err != nil {
+			return types.WithdrawRequestResponse{}, err
+		}
+
+		// STATE-05/14 (P3): validate nonce == account.Nonce+1 and debit the
+		// pending balance. On failure the off-chain state is left untouched.
+		if _, err := s.offchainSettlementService.ApplyWithdrawRequest(
+			ctx,
+			withdrawReq,
+			withdrawDefaultUserSecret,
+		); err != nil {
+			return types.WithdrawRequestResponse{}, err
+		}
+
+		// Persist ONLY after a successful apply, so a rejected request never
+		// leaves a phantom row in the store.
+		withdrawReq, err = s.withdrawRepository.SaveWithdrawRequest(ctx, withdrawReq)
+		if err != nil {
+			return types.WithdrawRequestResponse{}, err
+		}
+
+		return types.WithdrawRequestResponse{
+			WithdrawRequest: withdrawReq,
+			State: types.PartialState{
+				WithdrawStatus: "requested",
+			},
+		}, nil
 	}
+
+	// Legacy non-off-chain path: P4 assigns a sequence-based nonce. There is no
+	// per-account off-chain state to sequence against in this mode.
+	withdrawReq := s.withdrawRepository.CreateWithdrawRequest(ctx, req)
 
 	return types.WithdrawRequestResponse{
 		WithdrawRequest: withdrawReq,

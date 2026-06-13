@@ -54,6 +54,38 @@ func NewOffchainStateManager() *OffchainStateManager {
 	}
 }
 
+// BuildWithdrawRequest dựng một WithdrawRequest từ user intent dựa trên
+// state sống của manager (STATE-04). Đây là entry point đúng kiến trúc cho
+// INT-06: nonce được derive per-account (`account.Nonce + 1`) qua
+// WithdrawRequestBuilder, KHÔNG dùng global counter — nên không bao giờ lệch
+// khỏi nonce mà ApplyWithdrawRequest validate, kể cả sau các request fail.
+//
+// Builder cũng validate balance >= amount tại thời điểm build, nên thiếu
+// balance bị reject sớm với state.ErrInsufficientBalance (caller P4 map qua
+// HTTP).
+//
+// withdrawID là identity bền vững do caller (P4) cấp từ một nguồn durable
+// (vd. Postgres sequence) — KHÔNG do manager sinh. Tách bạch như vậy để
+// withdrawId luôn unique xuyên suốt restart khi request được persist vào
+// store bền vững, trong khi nonce vẫn thuần là state per-account của P3.
+//
+// Read-only với balance/nonce: việc debit + increment nonce vẫn thuộc về
+// ApplyWithdrawRequest (STATE-05). Caller chịu trách nhiệm gọi
+// ApplyWithdrawRequest sau khi build để thực sự áp dụng.
+func (m *OffchainStateManager) BuildWithdrawRequest(intent WithdrawIntent, withdrawID string) (types.WithdrawRequest, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	builder := NewWithdrawRequestBuilder(m.ls)
+	req, err := builder.Build(intent)
+	if err != nil {
+		return types.WithdrawRequest{}, err
+	}
+	// Override the builder's in-memory id with the caller-supplied durable id.
+	req.WithdrawID = withdrawID
+	return req, nil
+}
+
 // ApplyDeposit credit pending balance cho deposit record và advance
 // pending root. Idempotent: replaying cùng depositId trả về
 // ErrDepositAlreadyApplied (cho phép indexer poll lại cùng tx mà không

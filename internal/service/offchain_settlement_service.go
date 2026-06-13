@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	appbatch "github.com/zhenjb/ganc-sys/internal/batch"
@@ -57,6 +58,98 @@ func NewOffchainSettlementService(
 		settlementBuilder: appbatch.NewSettlementUpdateBuilder(),
 		witnessBuilder:    appbatch.NewWitnessBuilder(),
 	}
+}
+
+// BuildWithdrawRequest maps the API request body to a state.WithdrawIntent and
+// delegates to the off-chain manager's STATE-04 builder, which derives the
+// per-account nonce (account.Nonce + 1) from the same off-chain account state
+// that ApplyWithdrawRequest validates against.
+//
+// withdrawID is supplied by the caller from the durable store (P4) so the id is
+// unique across restarts; the manager only owns nonce, not identity.
+func (s *OffchainSettlementService) BuildWithdrawRequest(
+	req types.WithdrawRequestBody,
+	withdrawID string,
+) (types.WithdrawRequest, error) {
+	return s.manager.BuildWithdrawRequest(appstate.WithdrawIntent{
+		Owner:       req.Owner,
+		Denom:       req.Denom,
+		Amount:      req.Amount,
+		Destination: req.Destination,
+	}, withdrawID)
+}
+
+// RehydrateFromStore rebuilds the in-memory off-chain manager state from the
+// durable pending-transition tables on startup.
+//
+// Why this exists: OffchainStateManager is in-memory and resets to genesis on
+// every process start, but the offchain_pending_* tables (and their unique
+// constraints on withdraw_id / nullifier) persist across restarts. Without
+// rehydration the manager forgets prior balances/nonces/nullifiers, so the
+// deterministic nullifier = Hash(secret, nonce) regenerates after a restart and
+// collides with the persisted unique index (SQLSTATE 23505). Replaying the
+// persisted pending deposits and withdrawals restores per-account balances,
+// nonces, and consumed nullifiers so subsequent requests advance correctly and
+// never reuse a value.
+//
+// Replay uses the manager's in-memory mutators directly (ApplyDeposit /
+// ApplyWithdrawRequest) — NOT the persisting service wrappers — so it never
+// re-writes the DB. Deposits are applied before withdrawals so balances exist
+// before debits; withdrawals are replayed in persisted (created_at = nonce)
+// order with their stored nullifier. Individual replay failures are logged and
+// skipped so one corrupt legacy row cannot abort startup.
+func (s *OffchainSettlementService) RehydrateFromStore(ctx context.Context) error {
+	if s.repository == nil {
+		return ErrOffchainSettlementUnavailable
+	}
+
+	deposits, err := s.repository.ListPendingDeposits(ctx)
+	if err != nil {
+		return fmt.Errorf("list pending deposits: %w", err)
+	}
+	withdrawals, err := s.repository.ListPendingWithdrawals(ctx)
+	if err != nil {
+		return fmt.Errorf("list pending withdrawals: %w", err)
+	}
+
+	var depApplied, depSkipped, wdApplied, wdSkipped int
+
+	for _, d := range deposits {
+		record := types.DepositRecord{
+			DepositID: d.DepositID,
+			Owner:     d.OwnerAddress,
+			Denom:     d.Denom,
+			Amount:    d.Amount,
+		}
+		if _, err := s.manager.ApplyDeposit(record); err != nil {
+			depSkipped++
+			log.Printf("[offchain-rehydrate] skip deposit %s: %v", d.DepositID, err)
+			continue
+		}
+		depApplied++
+	}
+
+	for _, w := range withdrawals {
+		req := types.WithdrawRequest{
+			WithdrawID:  w.WithdrawID,
+			Owner:       w.OwnerAddress,
+			Denom:       w.Denom,
+			Amount:      w.Amount,
+			Destination: w.DestinationAddress,
+			Nonce:       w.Nonce,
+			Signature:   w.Signature,
+		}
+		if _, err := s.manager.ApplyWithdrawRequest(req, w.Nullifier); err != nil {
+			wdSkipped++
+			log.Printf("[offchain-rehydrate] skip withdrawal %s (nullifier=%s): %v", w.WithdrawID, w.Nullifier, err)
+			continue
+		}
+		wdApplied++
+	}
+
+	log.Printf("[offchain-rehydrate] deposits applied=%d skipped=%d, withdrawals applied=%d skipped=%d",
+		depApplied, depSkipped, wdApplied, wdSkipped)
+	return nil
 }
 
 func (s *OffchainSettlementService) ApplyIndexedDeposit(
