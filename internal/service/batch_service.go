@@ -3,9 +3,11 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	batchbuilder "github.com/zhenjb/ganc-sys/internal/batch"
+	"github.com/zhenjb/ganc-sys/internal/prover"
 	"github.com/zhenjb/ganc-sys/internal/relayer"
 	"github.com/zhenjb/ganc-sys/internal/repository"
 	"github.com/zhenjb/ganc-sys/pkg/types"
@@ -19,6 +21,7 @@ const (
 var ErrOffchainSettlementServiceRequired = errors.New("offchain settlement service is required for pending batch build source")
 var ErrManualBatchInsufficientOffchainBalance = errors.New("insufficient off-chain balance")
 var ErrManualBatchDepositNotFound = errors.New("deposit not found")
+var ErrProofVerificationFailed = errors.New("proof verification failed")
 
 // BatchService owns batch endpoint orchestration.
 //
@@ -34,6 +37,18 @@ type BatchService struct {
 
 	buildSource               string
 	offchainSettlementService *OffchainSettlementService
+
+	// proofVerifier performs real ZK verification before a batch is submitted.
+	// When nil, verification is skipped (e.g. local/mock prover mode where the
+	// proof is not a real Groth16 proof). When set (remote gazk prover), an
+	// invalid proof rejects the batch and currentStateRoot does not advance.
+	proofVerifier prover.Verifier
+}
+
+// SetProofVerifier injects a real ZK proof verifier. It is an optional
+// dependency so existing call sites and mock-mode setups remain unchanged.
+func (s *BatchService) SetProofVerifier(verifier prover.Verifier) {
+	s.proofVerifier = verifier
 }
 
 func NewBatchService(
@@ -168,6 +183,23 @@ func (s *BatchService) buildPendingBatch(ctx context.Context) (types.BuildBatchR
 }
 
 func (s *BatchService) SubmitBatch(ctx context.Context, req types.SubmitBatchRequestBody) (types.SubmitBatchResponse, error) {
+	// Real ZK verification gate. Mirrors the on-chain x/zkdex invariant:
+	// currentStateRoot advances only after proof verification succeeds.
+	// On failure the batch is rejected before the relayer runs, so there is no
+	// root update, no nullifier write, and no withdraw record creation (the
+	// "invalid proof => no state change" invariant). Off-chain pending state is
+	// left untouched; rolling it back is an explicit P3 operation, not part of
+	// verification.
+	if s.proofVerifier != nil {
+		if verifyErr := s.proofVerifier.Verify(ctx, prover.VerifyProofInput{
+			SettlementUpdate: req.SettlementUpdate,
+			BatchCommitments: req.BatchCommitments,
+			ProofBundle:      req.ProofBundle,
+		}); verifyErr != nil {
+			return types.SubmitBatchResponse{}, fmt.Errorf("%w: %v", ErrProofVerificationFailed, verifyErr)
+		}
+	}
+
 	result, err := s.relayerClient.SubmitBatch(ctx, relayer.SubmitBatchInput{
 		SettlementUpdate: req.SettlementUpdate,
 		BatchCommitments: req.BatchCommitments,

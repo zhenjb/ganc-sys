@@ -34,6 +34,7 @@ docker compose up -d postgres
 ```bash
 docker exec -i ganc_sys_postgres psql -U ganc -d ganc_sys < migrations/001_init.sql
 docker exec -i ganc_sys_postgres psql -U ganc -d ganc_sys < migrations/002_withdraw_request_sequence.sql
+docker exec -i ganc_sys_postgres psql -U ganc -d ganc_sys < migrations/003_offchain_settlement.sql
 ```
 
 ## Reset local DB workflow data
