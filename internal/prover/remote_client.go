@@ -108,11 +108,85 @@ type remoteProveResponse struct {
 	ProofBundle types.ProofBundle `json:"proofBundle"`
 }
 
+type remoteVerifyRequest struct {
+	SettlementUpdate types.SettlementUpdate `json:"settlementUpdate"`
+	BatchCommitments types.BatchCommitments `json:"batchCommitments"`
+	ProofBundle      types.ProofBundle      `json:"proofBundle"`
+}
+
+type remoteVerifyResponse struct {
+	Valid bool   `json:"valid"`
+	Error string `json:"error,omitempty"`
+}
+
 type remoteErrorResponse struct {
 	Error string `json:"error"`
 }
 
 var _ Client = (*RemoteClient)(nil)
+var _ Verifier = (*RemoteClient)(nil)
+
+// Verify calls the gazk /verify endpoint to perform a real Groth16
+// verification of the proof against the public inputs derived from the
+// settlement update and batch commitments.
+//
+// It returns nil only if gazk reports the proof valid. Any transport error,
+// non-2xx status, or {"valid":false} response is returned as an error so the
+// caller can reject the batch without advancing state.
+func (c *RemoteClient) Verify(ctx context.Context, input VerifyProofInput) error {
+	reqBody := remoteVerifyRequest{
+		SettlementUpdate: input.SettlementUpdate,
+		BatchCommitments: input.BatchCommitments,
+		ProofBundle:      input.ProofBundle,
+	}
+
+	raw, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("marshal remote verify request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		c.baseURL+"/verify",
+		bytes.NewReader(raw),
+	)
+	if err != nil {
+		return fmt.Errorf("create remote verify request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("call remote verifier: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var errResp remoteErrorResponse
+		if decodeErr := json.NewDecoder(resp.Body).Decode(&errResp); decodeErr == nil && errResp.Error != "" {
+			return fmt.Errorf("remote verifier returned %d: %s", resp.StatusCode, errResp.Error)
+		}
+
+		return fmt.Errorf("remote verifier returned status %d", resp.StatusCode)
+	}
+
+	var verifyResp remoteVerifyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&verifyResp); err != nil {
+		return fmt.Errorf("decode remote verify response: %w", err)
+	}
+
+	if !verifyResp.Valid {
+		if verifyResp.Error != "" {
+			return fmt.Errorf("proof rejected by verifier: %s", verifyResp.Error)
+		}
+
+		return fmt.Errorf("proof rejected by verifier")
+	}
+
+	return nil
+}
 
 func (c *RemoteClient) GetVerifierArtifact(ctx context.Context) (types.VerifierArtifact, error) {
 	if c.baseURL == "" {

@@ -160,6 +160,18 @@ func main() {
 	proofService := service.NewProofService(proverClient, proofRepository)
 	proofHandler := handler.NewProofHandler(proofService)
 
+	// Enable real ZK verification on batch submit when the prover client can
+	// also verify (remote gazk) and it has not been explicitly disabled. This
+	// makes /api/batch/submit reject batches whose Groth16 proof is invalid,
+	// instead of relying on the mock relayer that accepts everything.
+	proofVerifyEnabled := getenv("PROOF_VERIFY_ENABLED", "true") == "true"
+	if verifier, ok := proverClient.(prover.Verifier); ok && proofVerifyEnabled {
+		batchService.SetProofVerifier(verifier)
+		log.Printf("batch submit real ZK verification enabled via %s prover", proverMode)
+	} else {
+		log.Printf("batch submit real ZK verification disabled (proverMode=%s, enabled=%v)", proverMode, proofVerifyEnabled)
+	}
+
 	chainQueryService := service.NewChainQueryService(chainQueryClient)
 	chainQueryHandler := handler.NewChainQueryHandler(chainQueryService)
 
