@@ -5,9 +5,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/rs/cors"
 	"github.com/zhenjb/ganc-sys/internal/api"
 	"github.com/zhenjb/ganc-sys/internal/batch"
 	"github.com/zhenjb/ganc-sys/internal/chain"
@@ -20,11 +22,20 @@ import (
 	"github.com/zhenjb/ganc-sys/internal/service"
 	appstate "github.com/zhenjb/ganc-sys/internal/state"
 	"github.com/zhenjb/ganc-sys/internal/store"
-	"github.com/rs/cors"
 )
 
 const BatchBuilderModeLocal = "local"
 const BatchBuilderModeSnapshot = "snapshot"
+
+// Relayer / chain-client mode selectors. "local" keeps the deterministic mock so
+// the backend builds and runs end-to-end without a chain; "cosmos" wires the
+// real obd-CLI clients. Switching is a config change only — no code edits.
+const relayerModeLocal = "local"
+const relayerModeCosmos = "cosmos"
+const chainDepositModeLocal = "local"
+const chainDepositModeCosmos = "cosmos"
+const indexerModeMock = "mock"
+const indexerModeChain = "chain"
 
 func main() {
 	port := getenv("PORT", "8080")
@@ -97,8 +108,11 @@ func main() {
 	stateService := service.NewStateService(stateRepository)
 	stateHandler := handler.NewStateHandler(stateService)
 
-	chainClient := chain.NewLocalClient()
-	relayerClient := relayer.NewLocalClient()
+	relayerMode := getenv("RELAYER_MODE", relayerModeLocal)
+	relayerClient := newRelayerClient(relayerMode)
+
+	chainDepositMode := getenv("CHAIN_DEPOSIT_MODE", chainDepositModeLocal)
+	chainClient := newChainClient(chainDepositMode)
 
 	depositRepository := repository.NewDepositRepositoryWithChainQuery(
 		memoryStore,
@@ -118,6 +132,18 @@ func main() {
 
 	depositService := service.NewDepositService(depositRepository, depositIndexer, chainClient)
 	depositHandler := handler.NewDepositHandler(depositService)
+
+	// SYS-03: when running against a real chain, start the asynchronous deposit
+	// poller. It reads DepositQueued/EventDeposit events from the Tendermint RPC
+	// and mirrors them into the deposit store and off-chain settlement state via
+	// the same DepositIndexer used by POST /api/deposit. Default mode is "mock":
+	// deposits are only indexed synchronously from the deposit response, so the
+	// backend still runs without a chain.
+	indexerMode := getenv("INDEXER_MODE", indexerModeMock)
+	if indexerMode == indexerModeChain {
+		startDepositPoller(depositIndexer)
+	}
+	log.Printf("indexer mode=%s", indexerMode)
 
 	withdrawRepository := repository.NewWithdrawRepositoryWithDB(
 		memoryStore,
@@ -149,6 +175,16 @@ func main() {
 		batchBuildSource,
 		offchainSettlementService,
 	)
+	// SYS-04 (STATE-14): in snapshot-builder + manual mode the batch is built from
+	// the in-memory OffchainStateManager snapshot, so a rejected submit must roll
+	// the manager's pending state back to the last accepted baseline. In the
+	// DB-backed pending mode the offchain settlement cursor already owns rollback,
+	// so the manager rollback is intentionally left unwired there.
+	if batchBuilderMode == BatchBuilderModeSnapshot && batchBuildSource != service.BatchBuildSourcePending {
+		batchService.SetStateRollback(offchainStateManager)
+		log.Printf("batch submit state rollback enabled (snapshot builder, manual source)")
+	}
+
 	batchHandler := handler.NewBatchHandler(batchService)
 
 	proverClient := newProverClient(proverMode, proverURL)
@@ -165,9 +201,24 @@ func main() {
 	// makes /api/batch/submit reject batches whose Groth16 proof is invalid,
 	// instead of relying on the mock relayer that accepts everything.
 	proofVerifyEnabled := getenv("PROOF_VERIFY_ENABLED", "true") == "true"
+	expectedArtifact := prover.ExpectedArtifact{
+		VerificationKeyID: os.Getenv("PROOF_VERIFICATION_KEY_ID"),
+		HashMode:          os.Getenv("PROOF_HASH_MODE"),
+	}
+	preflightStrict := getenv("PROOF_PREFLIGHT_STRICT", "false") == "true"
 	if verifier, ok := proverClient.(prover.Verifier); ok && proofVerifyEnabled {
 		batchService.SetProofVerifier(verifier)
+		batchService.SetExpectedVerificationKeyID(expectedArtifact.VerificationKeyID)
 		log.Printf("batch submit real ZK verification enabled via %s prover", proverMode)
+		if expectedArtifact.IsZero() {
+			log.Printf("warning: no expected verifier artifact pinned (set PROOF_VERIFICATION_KEY_ID/PROOF_HASH_MODE to lock the gazk circuit)")
+		} else {
+			log.Printf("expected verifier artifact: verificationKeyId=%q hashMode=%q",
+				expectedArtifact.VerificationKeyID, expectedArtifact.HashMode)
+		}
+		// SYS-05 startup preflight: confirm gazk advertises the expected circuit
+		// before the backend starts closing the ZK loop against it.
+		preflightProverArtifact(proverClient, expectedArtifact, preflightStrict)
 	} else {
 		log.Printf("batch submit real ZK verification disabled (proverMode=%s, enabled=%v)", proverMode, proofVerifyEnabled)
 	}
@@ -189,6 +240,8 @@ func main() {
 	addr := ":" + port
 	log.Printf("ganc-sys backend API listening on http://localhost%s", addr)
 	log.Printf("chain query mode=%s rest=%s", chainQueryMode, chainRESTURL)
+	log.Printf("chain deposit mode=%s", chainDepositMode)
+	log.Printf("relayer mode=%s", relayerMode)
 	log.Printf("withdraw request store=%s", withdrawRequestStore)
 	log.Printf("withdraw record store=%s", withdrawRecordStore)
 	log.Printf("batch build store=%s", batchBuildStore)
@@ -234,6 +287,96 @@ func newBatchBuilder(
 	}
 }
 
+// newRelayerClient selects the settlement/claim relayer. The real CosmosClient
+// shells out to the obd CLI to broadcast MsgSubmitBatchProof / MsgClaimWithdraw;
+// the LocalClient is a deterministic placeholder that preserves the REST shape.
+func newRelayerClient(mode string) relayer.Client {
+	switch mode {
+	case relayerModeCosmos:
+		cfg := relayer.CosmosConfig{
+			Binary:         getenv("CHAIN_BINARY", "obd"),
+			ChainID:        os.Getenv("CHAIN_ID"),
+			Node:           os.Getenv("CHAIN_NODE"),
+			From:           os.Getenv("RELAYER_FROM"),
+			KeyringBackend: os.Getenv("CHAIN_KEYRING_BACKEND"),
+			Home:           os.Getenv("CHAIN_HOME"),
+			Gas:            os.Getenv("CHAIN_GAS"),
+			GasAdjustment:  os.Getenv("CHAIN_GAS_ADJUSTMENT"),
+			GasPrices:      os.Getenv("CHAIN_GAS_PRICES"),
+			Fees:           os.Getenv("CHAIN_FEES"),
+			BroadcastMode:  os.Getenv("CHAIN_BROADCAST_MODE"),
+		}
+		log.Printf("relayer cosmos mode: binary=%s chainID=%s node=%s from=%s",
+			cfg.Binary, cfg.ChainID, cfg.Node, cfg.From)
+		return relayer.NewCosmosClient(cfg, nil)
+	case relayerModeLocal:
+		return relayer.NewLocalClient()
+	default:
+		log.Printf("unknown RELAYER_MODE=%q, falling back to local", mode)
+		return relayer.NewLocalClient()
+	}
+}
+
+// newChainClient selects the deposit chain client. The real CosmosClient builds,
+// signs and broadcasts MsgDeposit via the obd CLI and returns the on-chain
+// txHash + EventDeposit; the LocalClient simulates the same typed event so the
+// deposit indexer is agnostic to the source.
+func newChainClient(mode string) chain.Client {
+	switch mode {
+	case chainDepositModeCosmos:
+		cfg := chain.CosmosConfig{
+			Binary:         getenv("CHAIN_BINARY", "obd"),
+			ChainID:        os.Getenv("CHAIN_ID"),
+			Node:           os.Getenv("CHAIN_NODE"),
+			KeyringBackend: os.Getenv("CHAIN_KEYRING_BACKEND"),
+			Home:           os.Getenv("CHAIN_HOME"),
+			Gas:            os.Getenv("CHAIN_GAS"),
+			GasAdjustment:  os.Getenv("CHAIN_GAS_ADJUSTMENT"),
+			GasPrices:      os.Getenv("CHAIN_GAS_PRICES"),
+			Fees:           os.Getenv("CHAIN_FEES"),
+			BroadcastMode:  os.Getenv("CHAIN_BROADCAST_MODE"),
+		}
+		log.Printf("chain deposit cosmos mode: binary=%s chainID=%s node=%s",
+			cfg.Binary, cfg.ChainID, cfg.Node)
+		return chain.NewCosmosClient(cfg, nil)
+	case chainDepositModeLocal:
+		return chain.NewLocalClient()
+	default:
+		log.Printf("unknown CHAIN_DEPOSIT_MODE=%q, falling back to local", mode)
+		return chain.NewLocalClient()
+	}
+}
+
+// startDepositPoller builds a Tendermint-backed deposit poller and runs it in a
+// background goroutine for the lifetime of the process. It is best-effort: a
+// flaky RPC logs and retries on the next tick without affecting the HTTP server.
+func startDepositPoller(depositIndexer *indexer.DepositIndexer) {
+	rpcURL := getenv("CHAIN_RPC_URL", "http://localhost:26657")
+
+	source := indexer.NewTendermintEventSource(rpcURL)
+	if os.Getenv("INDEXER_LEGACY_BASE64") == "true" {
+		source = source.WithLegacyBase64Attributes()
+	}
+
+	var startHeight int64
+	if raw := os.Getenv("INDEXER_START_HEIGHT"); raw != "" {
+		if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			startHeight = parsed
+		}
+	}
+
+	var interval time.Duration
+	if raw := os.Getenv("INDEXER_POLL_INTERVAL"); raw != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil {
+			interval = parsed
+		}
+	}
+
+	poller := indexer.NewDepositPoller(source, depositIndexer, startHeight, interval)
+	log.Printf("deposit poller starting: rpc=%s startHeight=%d", rpcURL, startHeight)
+	go poller.Run(context.Background())
+}
+
 func newProverClient(mode string, remoteURL string) prover.Client {
 	switch mode {
 	case "remote":
@@ -244,6 +387,44 @@ func newProverClient(mode string, remoteURL string) prover.Client {
 		log.Printf("unknown PROVER_MODE=%q, falling back to local", mode)
 		return prover.NewLocalClient()
 	}
+}
+
+// preflightProverArtifact fetches gazk's verifier artifact at startup and checks
+// it matches the expected (pinned) verificationKeyId / hashMode (SYS-05). This
+// fails fast on a misconfigured prover instead of discovering the mismatch only
+// when a real proof is submitted. In strict mode a mismatch / unreachable prover
+// aborts startup; otherwise it logs loudly and continues (so the backend still
+// boots when gazk is down and the mock relayer is in use).
+func preflightProverArtifact(proverClient prover.Client, expected prover.ExpectedArtifact, strict bool) {
+	provider, ok := proverClient.(prover.VerifierArtifactProvider)
+	if !ok {
+		log.Printf("prover preflight skipped: client does not expose a verifier artifact")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	artifact, err := provider.GetVerifierArtifact(ctx)
+	if err != nil {
+		failPreflight(strict, "prover preflight: cannot fetch verifier artifact: %v", err)
+		return
+	}
+
+	if err := prover.ValidateArtifactMatchesExpected(artifact, expected); err != nil {
+		failPreflight(strict, "prover preflight: verifier artifact mismatch: %v", err)
+		return
+	}
+
+	log.Printf("prover preflight OK: verificationKeyId=%q hashMode=%q curve=%q backend=%q",
+		artifact.VerificationKeyID, artifact.HashMode, artifact.Curve, artifact.Backend)
+}
+
+func failPreflight(strict bool, format string, args ...any) {
+	if strict {
+		log.Fatalf(format, args...)
+	}
+	log.Printf(format+" (continuing; set PROOF_PREFLIGHT_STRICT=true to fail fast)", args...)
 }
 
 func openDatabaseIfNeeded(
