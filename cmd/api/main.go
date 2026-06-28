@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -255,13 +256,28 @@ func main() {
 		log.Printf("prover url=%s", proverURL)
 	}
 
-	// CORS
+	// CORS — allowed origins are configurable so the same binary serves a local
+	// FE (http://localhost:3000) and a remote FE (e.g. a GitHub Codespaces
+	// forwarded URL https://<name>-3000.app.github.dev). Set CORS_ALLOWED_ORIGINS
+	// to a comma-separated list; a wildcard pattern like https://*.app.github.dev
+	// is supported and still echoes the concrete origin so credentials work.
+	//
+	// The single literal "*" cannot be combined with credentials (CORS spec), so
+	// when it is used we disable credentials automatically.
+	allowedOrigins := corsAllowedOrigins()
+	allowCredentials := true
+	for _, origin := range allowedOrigins {
+		if origin == "*" {
+			allowCredentials = false
+		}
+	}
 	c := cors.New(cors.Options{
-		AllowedOrigins:   []string{"http://localhost:3000"}, // Đổi thành port chạy Frontend của bạn nếu khác
+		AllowedOrigins:   allowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
 		AllowedHeaders:   []string{"Content-Type", "Authorization"},
-		AllowCredentials: true,
+		AllowCredentials: allowCredentials,
 	})
+	log.Printf("CORS allowed origins=%v credentials=%v", allowedOrigins, allowCredentials)
 
 	// 2. Bọc router.Routes() bằng middleware cors
 	handlerWithCORS := c.Handler(router.Routes())
@@ -425,6 +441,27 @@ func failPreflight(strict bool, format string, args ...any) {
 		log.Fatalf(format, args...)
 	}
 	log.Printf(format+" (continuing; set PROOF_PREFLIGHT_STRICT=true to fail fast)", args...)
+}
+
+// corsAllowedOrigins reads the comma-separated CORS_ALLOWED_ORIGINS env var and
+// returns the list of allowed browser origins. Empty/unset falls back to the
+// local dev FE origin so existing local setups are unchanged.
+func corsAllowedOrigins() []string {
+	raw := strings.TrimSpace(os.Getenv("CORS_ALLOWED_ORIGINS"))
+	if raw == "" {
+		return []string{"http://localhost:3000"}
+	}
+
+	out := make([]string, 0)
+	for _, part := range strings.Split(raw, ",") {
+		if origin := strings.TrimSpace(part); origin != "" {
+			out = append(out, origin)
+		}
+	}
+	if len(out) == 0 {
+		return []string{"http://localhost:3000"}
+	}
+	return out
 }
 
 func openDatabaseIfNeeded(
