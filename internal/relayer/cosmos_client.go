@@ -88,58 +88,86 @@ func NewCosmosClient(cfg CosmosConfig, runner CommandRunner) *CosmosClient {
 
 var _ Client = (*CosmosClient)(nil)
 
-// submitBatchProofFile is the JSON document consumed by the on-chain
-// `obd tx zkdex submit-batch-proof <file>` command. Field names match the
-// x/zkdex proto json_names exactly, so the chain parses it without remapping.
-type submitBatchProofFile struct {
-	SettlementUpdate types.SettlementUpdate `json:"settlementUpdate"`
-	BatchCommitments types.BatchCommitments `json:"batchCommitments"`
-	ProofBundle      types.ProofBundle      `json:"proofBundle"`
+// chainProofBundle is the EXACT JSON the on-chain keeper unmarshals from the
+// MsgSubmitBatchProof.proof_bundle bytes field (x/zkdex keeper
+// agreementProofBundle). Only `proof` + `publicInputs` are read on-chain, and
+// publicInputs must DeepEqual the 6 roots the chain derives from
+// settlementUpdate + batchCommitments. We deliberately omit verificationKeyId
+// (and any other ProofBundle field) the chain does not expect.
+type chainProofBundle struct {
+	Proof        string   `json:"proof"`
+	PublicInputs []string `json:"publicInputs"`
 }
 
-// buildSubmitBatchProofPayload renders the message file. Kept as a pure
-// function so the exact on-chain contract can be asserted in unit tests.
-func buildSubmitBatchProofPayload(input SubmitBatchInput) ([]byte, error) {
+// buildSubmitBatchProofFlags renders the three autocli flag values for
+//
+//	obd tx zkdex submit-batch-proof \
+//	  --settlement-update <json> --batch-commitments <json> --proof-bundle <bytes>
+//
+// The JSON struct tags on types.SettlementUpdate / types.BatchCommitments match
+// the x/zkdex proto json_names exactly, so the chain parses them without
+// remapping. proofBundle is the raw bytes later written to a temp file and
+// passed to the `binary` --proof-bundle flag. Kept pure so the on-chain
+// contract can be asserted in unit tests.
+func buildSubmitBatchProofFlags(input SubmitBatchInput) (settlementUpdate string, batchCommitments string, proofBundle []byte, err error) {
 	if input.SettlementUpdate.BatchID == "" {
-		return nil, fmt.Errorf("settlementUpdate.batchId is required")
+		return "", "", nil, fmt.Errorf("settlementUpdate.batchId is required")
 	}
 	if input.ProofBundle.Proof == "" {
-		return nil, fmt.Errorf("proofBundle.proof is required")
+		return "", "", nil, fmt.Errorf("proofBundle.proof is required")
 	}
 	if len(input.ProofBundle.PublicInputs) != 6 {
-		return nil, fmt.Errorf("proofBundle.publicInputs must contain 6 values")
+		return "", "", nil, fmt.Errorf("proofBundle.publicInputs must contain 6 values")
 	}
 
-	payload := submitBatchProofFile{
-		SettlementUpdate: input.SettlementUpdate,
-		BatchCommitments: input.BatchCommitments,
-		ProofBundle:      input.ProofBundle,
+	su, err := json.Marshal(input.SettlementUpdate)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("marshal settlementUpdate: %w", err)
 	}
-	return json.MarshalIndent(payload, "", "  ")
+	bc, err := json.Marshal(input.BatchCommitments)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("marshal batchCommitments: %w", err)
+	}
+	pb, err := json.Marshal(chainProofBundle{
+		Proof:        input.ProofBundle.Proof,
+		PublicInputs: input.ProofBundle.PublicInputs,
+	})
+	if err != nil {
+		return "", "", nil, fmt.Errorf("marshal proofBundle: %w", err)
+	}
+	return string(su), string(bc), pb, nil
 }
 
 func (c *CosmosClient) SubmitBatch(ctx context.Context, input SubmitBatchInput) (SubmitBatchResult, error) {
-	payload, err := buildSubmitBatchProofPayload(input)
+	settlementUpdate, batchCommitments, proofBundle, err := buildSubmitBatchProofFlags(input)
 	if err != nil {
 		return SubmitBatchResult{}, err
 	}
 
-	file, err := os.CreateTemp("", "zkdex-submit-batch-*.json")
+	// The on-chain `--proof-bundle` flag is a `binary` value: cosmos autocli
+	// reads the bytes from a file path. Write the {proof, publicInputs} JSON to a
+	// temp file and pass its path (the settlement/commitments go inline as JSON).
+	file, err := os.CreateTemp("", "zkdex-proof-bundle-*.json")
 	if err != nil {
-		return SubmitBatchResult{}, fmt.Errorf("create temp submit file: %w", err)
+		return SubmitBatchResult{}, fmt.Errorf("create temp proof-bundle file: %w", err)
 	}
 	defer os.Remove(file.Name())
 
-	if _, err := file.Write(payload); err != nil {
+	if _, err := file.Write(proofBundle); err != nil {
 		file.Close()
-		return SubmitBatchResult{}, fmt.Errorf("write temp submit file: %w", err)
+		return SubmitBatchResult{}, fmt.Errorf("write temp proof-bundle file: %w", err)
 	}
 	if err := file.Close(); err != nil {
-		return SubmitBatchResult{}, fmt.Errorf("close temp submit file: %w", err)
+		return SubmitBatchResult{}, fmt.Errorf("close temp proof-bundle file: %w", err)
 	}
 
 	args := append(
-		[]string{"tx", "zkdex", "submit-batch-proof", file.Name()},
+		[]string{
+			"tx", "zkdex", "submit-batch-proof",
+			"--settlement-update", settlementUpdate,
+			"--batch-commitments", batchCommitments,
+			"--proof-bundle", file.Name(),
+		},
 		c.commonTxArgs(c.cfg.From)...,
 	)
 

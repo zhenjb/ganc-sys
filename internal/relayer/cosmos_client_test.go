@@ -28,6 +28,16 @@ func (f *fakeRunner) Run(ctx context.Context, name string, args ...string) ([]by
 	return f.out, f.err
 }
 
+// flagValue returns the argument immediately following the named flag.
+func flagValue(args []string, name string) (string, bool) {
+	for i, a := range args {
+		if a == name && i+1 < len(args) {
+			return args[i+1], true
+		}
+	}
+	return "", false
+}
+
 func sampleSubmitInput() SubmitBatchInput {
 	return SubmitBatchInput{
 		SettlementUpdate: types.SettlementUpdate{
@@ -118,6 +128,9 @@ func TestCosmosClientSubmitBatchPassesExpectedCLIArgs(t *testing.T) {
 	args := strings.Join(runner.gotArgs, " ")
 	for _, want := range []string{
 		"tx zkdex submit-batch-proof",
+		"--settlement-update",
+		"--batch-commitments",
+		"--proof-bundle",
 		"--from relayer",
 		"--chain-id ganc-local",
 		"--keyring-backend test",
@@ -131,25 +144,68 @@ func TestCosmosClientSubmitBatchPassesExpectedCLIArgs(t *testing.T) {
 			t.Fatalf("expected args to contain %q, got: %s", want, args)
 		}
 	}
+
+	// The three autocli flags must carry the payload (NOT a positional file, the
+	// old — and chain-incompatible — shape).
+	su, ok := flagValue(runner.gotArgs, "--settlement-update")
+	if !ok || !strings.Contains(su, `"batchId":"batch-1"`) {
+		t.Fatalf("--settlement-update should carry the settlement JSON, got %q", su)
+	}
+	bc, ok := flagValue(runner.gotArgs, "--batch-commitments")
+	if !ok || !strings.Contains(bc, `"depositsRoot":"0xdepositsRoot"`) {
+		t.Fatalf("--batch-commitments should carry the commitments JSON, got %q", bc)
+	}
+	pb, ok := flagValue(runner.gotArgs, "--proof-bundle")
+	if !ok || strings.TrimSpace(pb) == "" {
+		t.Fatalf("--proof-bundle should carry a temp file path, got %q", pb)
+	}
 }
 
-func TestCosmosClientSubmitBatchWritesValidPayloadFile(t *testing.T) {
-	// The last positional arg before the flags is the temp JSON file path. Verify
-	// the payload it would carry matches the on-chain submitBatchProof contract.
-	payload, err := buildSubmitBatchProofPayload(sampleSubmitInput())
+func TestBuildSubmitBatchProofFlags(t *testing.T) {
+	su, bc, pb, err := buildSubmitBatchProofFlags(sampleSubmitInput())
 	if err != nil {
-		t.Fatalf("build payload: %v", err)
+		t.Fatalf("build flags: %v", err)
 	}
 
-	var decoded submitBatchProofFile
-	if err := json.Unmarshal(payload, &decoded); err != nil {
-		t.Fatalf("payload is not valid JSON: %v", err)
+	var settlement types.SettlementUpdate
+	if err := json.Unmarshal([]byte(su), &settlement); err != nil {
+		t.Fatalf("settlement-update is not valid JSON: %v", err)
 	}
-	if decoded.SettlementUpdate.BatchID != "batch-1" {
-		t.Fatalf("expected batchId=batch-1, got %q", decoded.SettlementUpdate.BatchID)
+	if settlement.BatchID != "batch-1" {
+		t.Fatalf("expected batchId=batch-1, got %q", settlement.BatchID)
 	}
-	if len(decoded.ProofBundle.PublicInputs) != 6 {
-		t.Fatalf("expected 6 public inputs, got %d", len(decoded.ProofBundle.PublicInputs))
+
+	var commitments types.BatchCommitments
+	if err := json.Unmarshal([]byte(bc), &commitments); err != nil {
+		t.Fatalf("batch-commitments is not valid JSON: %v", err)
+	}
+	if commitments.DepositsRoot != "0xdepositsRoot" {
+		t.Fatalf("expected depositsRoot=0xdepositsRoot, got %q", commitments.DepositsRoot)
+	}
+
+	// proof-bundle bytes must be EXACTLY {proof, publicInputs}: the on-chain
+	// keeper (agreementProofBundle) reads only these and must NOT receive
+	// verificationKeyId or other fields.
+	var bundle map[string]json.RawMessage
+	if err := json.Unmarshal(pb, &bundle); err != nil {
+		t.Fatalf("proof-bundle is not valid JSON: %v", err)
+	}
+	if _, ok := bundle["proof"]; !ok {
+		t.Fatalf("proof-bundle must contain proof")
+	}
+	if _, ok := bundle["publicInputs"]; !ok {
+		t.Fatalf("proof-bundle must contain publicInputs")
+	}
+	if _, ok := bundle["verificationKeyId"]; ok {
+		t.Fatalf("proof-bundle must NOT contain verificationKeyId (chain does not expect it)")
+	}
+
+	var decoded chainProofBundle
+	if err := json.Unmarshal(pb, &decoded); err != nil {
+		t.Fatalf("proof-bundle decode: %v", err)
+	}
+	if len(decoded.PublicInputs) != 6 {
+		t.Fatalf("expected 6 public inputs, got %d", len(decoded.PublicInputs))
 	}
 }
 
