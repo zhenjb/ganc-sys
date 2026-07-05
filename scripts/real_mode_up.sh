@@ -51,7 +51,15 @@ wait_http() { local i; for i in $(seq 1 "${2:-60}"); do curl -sf "$1" >/dev/null
 phase "Preconditions"
 command -v "$CHAIN_BINARY" >/dev/null || die "$CHAIN_BINARY not in PATH (need the ganc-trade node running)"
 command -v go >/dev/null || die "go not found"
-curl -sf "$CHAIN_RPC_URL/health" >/dev/null 2>&1 && ok "chain RPC $CHAIN_RPC_URL reachable" || die "chain RPC not reachable — start 'ignite chain serve' first"
+if curl -sf "$CHAIN_RPC_URL/health" >/dev/null 2>&1; then
+  ok "chain RPC $CHAIN_RPC_URL reachable"
+else
+  die "chain RPC $CHAIN_RPC_URL not reachable. Start the ganc-trade node FIRST (separate terminal):
+    cd <ganc-chain repo root>          # dir with exe.sh + sw/ob
+    ./exe.sh && source ~/.bashrc       # once: installs the 'ganc' CLI
+    ganc chain                         # = cd sw/ob && ignite chain serve --reset-once (first run compiles, ~minutes)
+  Wait until blocks commit (curl $CHAIN_RPC_URL/health -> {}), then re-run this script."
+fi
 curl -sf "$CHAIN_REST_URL/cosmos/base/tendermint/v1beta1/node_info" >/dev/null 2>&1 && ok "chain REST $CHAIN_REST_URL reachable" || warn "chain REST $CHAIN_REST_URL not reachable (balances query will fail)"
 
 ALICE_ADDR="$("$CHAIN_BINARY" keys show "$RELAYER_FROM" -a --keyring-backend "$CHAIN_KEYRING_BACKEND" 2>/dev/null)"
@@ -75,8 +83,6 @@ phase "backend (:$API_PORT) — REAL mode (memory store)"
   cd "$GANC_SYS_DIR" && \
   PORT="$API_PORT" \
   CORS_ALLOWED_ORIGINS="$CORS_ALLOWED_ORIGINS" \
-  OFFCHAIN_SETTLEMENT_ENABLED=true \
-  BATCH_BUILD_SOURCE=pending \
   PROVER_MODE=remote PROVER_URL="$GAZK_URL" \
   PROOF_VERIFY_ENABLED=true \
   PROOF_VERIFICATION_KEY_ID="$EXPECTED_VK_ID" PROOF_HASH_MODE=v0-sha256 PROOF_PREFLIGHT_STRICT=true \

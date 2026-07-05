@@ -52,19 +52,27 @@ ALICE="$("$CHAIN_BINARY" keys show "$SIGNER" -a --keyring-backend "$KEYRING" 2>/
 [ -n "$ALICE" ] || die "cannot resolve address for '$SIGNER'"
 rm -rf "$WORK_DIR"; mkdir -p "$WORK_DIR"; cd "$WORK_DIR"
 
-# N6 first (independent): over-withdraw before any deposit -> must be rejected.
-phase "N6 — Over-withdraw (> available balance) must be rejected"
-CODE="$(curl -s -o n6.json -w '%{http_code}' -X POST "$API/api/withdraw-request" -H 'Content-Type: application/json' \
+# N6 (self-contained): deposit 100, then request withdraw >> balance -> rejected.
+phase "N6 — Over-withdraw (> deposited) must be rejected"
+curl -s -X POST "$API/api/deposit" -H 'Content-Type: application/json' \
+  -d "{\"owner\":\"$ALICE\",\"denom\":\"$DENOM\",\"amount\":\"100\"}" -o n6_dep.json
+N6_DEP="$(jget n6_dep.json "d['depositRecord']['depositId']")"; [ -n "$N6_DEP" ] || die "N6 deposit failed"
+sleep "$COMMIT_WAIT"
+CODE="$(curl -s -o n6_wd.json -w '%{http_code}' -X POST "$API/api/withdraw-request" -H 'Content-Type: application/json' \
   -d "{\"owner\":\"$ALICE\",\"denom\":\"$DENOM\",\"amount\":\"999999999\",\"destination\":\"$ALICE\"}")"
-if [ "$CODE" -ge 400 ]; then ok "over-withdraw rejected at request (HTTP $CODE)"; else
-  note "request accepted (HTTP $CODE) — backend may defer to build/submit; checking build"
-  curl -s -X POST "$API/api/batch/build" -H 'Content-Type: application/json' -d '{}' -o n6b.json
-  jget n6b.json "d['settlementUpdate']['batchId']" >/dev/null 2>&1 \
-    && bad "over-withdraw was NOT rejected (built a batch)" || ok "over-withdraw rejected at build"
+if [ "$CODE" -ge 400 ]; then
+  ok "over-withdraw rejected at request (HTTP $CODE)"
+else
+  N6_WD="$(jget n6_wd.json "d['withdrawRequest']['withdrawId']")"
+  note "request accepted (HTTP $CODE) — backend defers; checking build with the over-withdraw id"
+  CODE2="$(curl -s -o n6_build.json -w '%{http_code}' -X POST "$API/api/batch/build" -H 'Content-Type: application/json' \
+    -d "{\"depositIds\":[\"$N6_DEP\"],\"withdrawIds\":[\"$N6_WD\"]}")"
+  jget n6_build.json "d['settlementUpdate']['batchId']" >/dev/null 2>&1 \
+    && bad "over-withdraw NOT rejected (built a batch, HTTP $CODE2)" || ok "over-withdraw rejected at build (HTTP $CODE2)"
 fi
 
-# Build a clean happy-path proof for N1..N5.
-note "deposit 100 + withdraw 40 + build + prove"
+# Build a clean happy-path proof for N1..N5 (separate deposit/withdraw).
+note "deposit 100 + withdraw 40 + build (explicit ids) + prove"
 curl -s -X POST "$API/api/deposit" -H 'Content-Type: application/json' \
   -d "{\"owner\":\"$ALICE\",\"denom\":\"$DENOM\",\"amount\":\"100\"}" -o deposit.json
 DEP_ID="$(jget deposit.json "d['depositRecord']['depositId']")"; [ -n "$DEP_ID" ] || die "deposit failed (see deposit.json)"
@@ -72,7 +80,8 @@ sleep "$COMMIT_WAIT"
 curl -s -X POST "$API/api/withdraw-request" -H 'Content-Type: application/json' \
   -d "{\"owner\":\"$ALICE\",\"denom\":\"$DENOM\",\"amount\":\"40\",\"destination\":\"$ALICE\"}" -o withdraw.json
 WD_ID="$(jget withdraw.json "d['withdrawRequest']['withdrawId']")"; [ -n "$WD_ID" ] || die "withdraw-request failed"
-curl -s -X POST "$API/api/batch/build" -H 'Content-Type: application/json' -d '{}' -o build.json
+curl -s -X POST "$API/api/batch/build" -H 'Content-Type: application/json' \
+  -d "{\"depositIds\":[\"$DEP_ID\"],\"withdrawIds\":[\"$WD_ID\"]}" -o build.json
 BATCH_ID="$(jget build.json "d['settlementUpdate']['batchId']")"; [ -n "$BATCH_ID" ] || die "build failed"
 python -c "import json;d=json.load(open('build.json'));json.dump({'settlementUpdate':d['settlementUpdate'],'batchCommitments':d['batchCommitments'],'witness':d['witness']},open('genproof.json','w'))"
 curl -s -X POST "$API/api/proof/generate" -H 'Content-Type: application/json' -d @genproof.json -o proof.json

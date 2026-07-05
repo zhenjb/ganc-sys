@@ -90,8 +90,9 @@ WD_ID="$(jget withdraw.json "d['withdrawRequest']['withdrawId']")"
 [ -n "$WD_ID" ] && ok "withdraw request created (withdrawId=$WD_ID)" || { cat withdraw.json; bad "withdraw-request failed"; }
 
 # ---------------------------------------------------------------------------
-phase "PHASE 3 — Build batch (pending source, ONCE)"
-curl -s -X POST "$API/api/batch/build" -H 'Content-Type: application/json' -d '{}' -o build.json
+phase "PHASE 3 — Build batch (manual source, explicit ids, memory store)"
+curl -s -X POST "$API/api/batch/build" -H 'Content-Type: application/json' \
+  -d "{\"depositIds\":[\"$DEP_ID\"],\"withdrawIds\":[\"$WD_ID\"]}" -o build.json
 BATCH_ID="$(jget build.json "d['settlementUpdate']['batchId']")"
 [ -n "$BATCH_ID" ] && ok "batch built (batchId=$BATCH_ID)" || { cat build.json; bad "batch/build failed"; }
 
