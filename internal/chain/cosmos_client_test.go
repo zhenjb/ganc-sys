@@ -2,8 +2,10 @@ package chain
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zhenjb/ganc-sys/internal/event"
 )
@@ -200,15 +202,51 @@ func TestCosmosClientDepositRejectsOnNonZeroCode(t *testing.T) {
 
 func TestCosmosClientDepositErrorsWhenEventNeverFound(t *testing.T) {
 	// Broadcast has no events and the query also returns none -> hard error so the
-	// caller never fabricates a depositId.
+	// caller never fabricates a depositId. Small retry budget keeps the test fast.
 	runner := &queueRunner{outputs: [][]byte{
 		[]byte(syncBroadcastOutput),
 		[]byte(`{"txhash":"SYNC55","code":0,"logs":[]}`),
 	}}
-	client := NewCosmosClient(CosmosConfig{}, runner)
+	client := NewCosmosClient(CosmosConfig{TxQueryRetries: 3, TxQueryInterval: time.Millisecond}, runner)
 
 	if _, err := client.Deposit(context.Background(), depositReq()); err == nil {
 		t.Fatalf("expected error when EventDeposit is never found")
+	}
+}
+
+func TestCosmosClientDepositPollsUntilCommitted(t *testing.T) {
+	// Real chain: --broadcast-mode sync returns before block inclusion, so the
+	// first few `query tx` calls fail ("tx not found") until the tx is committed
+	// and the EventDeposit (with the chain-assigned depositId) appears.
+	runner := &queueRunner{
+		outputs: [][]byte{
+			[]byte(syncBroadcastOutput), // broadcast: no events
+			nil,                         // query 1: not committed yet
+			nil,                         // query 2: not committed yet
+			[]byte(queriedTxOutput),     // query 3: event present
+		},
+		errs: []error{nil, fmt.Errorf("tx not found"), fmt.Errorf("tx not found"), nil},
+	}
+	client := NewCosmosClient(CosmosConfig{
+		ChainID:         "ganc-local",
+		Node:            "tcp://localhost:26657",
+		TxQueryRetries:  10,
+		TxQueryInterval: time.Millisecond,
+	}, runner)
+
+	res, err := client.Deposit(context.Background(), depositReq())
+	if err != nil {
+		t.Fatalf("deposit: %v", err)
+	}
+	if res.Events[0].Attributes["depositId"] != "dep-99" {
+		t.Fatalf("expected depositId=dep-99 after polling, got %q", res.Events[0].Attributes["depositId"])
+	}
+	if res.Height != 51 {
+		t.Fatalf("expected height enriched to 51, got %d", res.Height)
+	}
+	// broadcast + 3 query attempts (2 miss, 1 hit).
+	if runner.calls != 4 {
+		t.Fatalf("expected 4 CLI calls (broadcast + 3 queries), got %d", runner.calls)
 	}
 }
 

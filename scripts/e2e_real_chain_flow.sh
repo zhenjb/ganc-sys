@@ -52,9 +52,10 @@ bank_balance() {  # bank_balance <addr> -> integer amount of DENOM (0 if none)
   "$CHAIN_BINARY" q bank balances "$1" --node "$NODE" -o json 2>/dev/null \
     | jq -r --arg d "$DENOM" '(.balances[]?|select(.denom==$d)|.amount) // "0"' | head -n1
 }
-module_balance() {  # module account spendable balance of DENOM
+module_balance() {  # module account spendable balance of DENOM (digits only)
   "$CHAIN_BINARY" q zkdex module-account-balance "$DENOM" --node "$NODE" -o json 2>/dev/null \
-    | jq -r '(.balance.amount // .amount // .balance // "0")' | head -n1
+    | jq -r '((.balance.amount? // .balance // .amount // "0") | tostring | gsub("[^0-9]"; ""))' \
+    | head -n1
 }
 
 # ---------------------------------------------------------------------------

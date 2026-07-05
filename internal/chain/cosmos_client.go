@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/zhenjb/ganc-sys/internal/event"
 )
@@ -42,6 +43,12 @@ type CosmosConfig struct {
 	GasPrices      string // --gas-prices (e.g. "0.025uusdc"); used if Fees empty
 	Fees           string // --fees (e.g. "2000uusdc"); takes precedence over GasPrices
 	BroadcastMode  string // --broadcast-mode (default "sync")
+
+	// TxQueryRetries / TxQueryInterval control how long Deposit polls `query tx`
+	// for the committed EventDeposit. --broadcast-mode sync returns before block
+	// inclusion, so the chain-assigned depositId is only readable after commit.
+	TxQueryRetries  int           // default 20
+	TxQueryInterval time.Duration // default 1s
 }
 
 func (c CosmosConfig) withDefaults() CosmosConfig {
@@ -59,6 +66,12 @@ func (c CosmosConfig) withDefaults() CosmosConfig {
 	}
 	if strings.TrimSpace(c.BroadcastMode) == "" {
 		c.BroadcastMode = "sync"
+	}
+	if c.TxQueryRetries <= 0 {
+		c.TxQueryRetries = 20
+	}
+	if c.TxQueryInterval <= 0 {
+		c.TxQueryInterval = 1 * time.Second
 	}
 	return c
 }
@@ -124,23 +137,39 @@ func (c *CosmosClient) Deposit(ctx context.Context, req DepositRequest) (TxResul
 
 	depositEvent, ok := extractDepositEvent(tx, owner, denom, amount)
 
-	// Sync broadcast returns the CheckTx result without block events. Enrich by
-	// querying the committed tx once so the deposit indexer gets a real depositId.
+	// --broadcast-mode sync returns the CheckTx result BEFORE the tx is in a
+	// block, so the typed EventDeposit (which carries the chain-assigned
+	// depositId = "dep-<creator>-<height>-<rand>") is absent from the broadcast
+	// output. Poll `query tx` until the committed tx surfaces the event.
 	if !ok {
-		queried, qErr := c.queryTx(ctx, tx.TxHash)
-		if qErr == nil {
+		for attempt := 0; attempt < c.cfg.TxQueryRetries; attempt++ {
+			if attempt > 0 {
+				select {
+				case <-ctx.Done():
+					return TxResult{}, ctx.Err()
+				case <-time.After(c.cfg.TxQueryInterval):
+				}
+			}
+			queried, qErr := c.queryTx(ctx, tx.TxHash)
+			if qErr != nil {
+				continue // not committed / queryable yet
+			}
+			if queried.Code != 0 {
+				return TxResult{}, fmt.Errorf("deposit rejected by chain (code=%d): %s", queried.Code, queried.RawLog)
+			}
 			if ev, found := extractDepositEvent(queried, owner, denom, amount); found {
 				depositEvent = ev
 				ok = true
 				if queried.Height != 0 {
 					tx.Height = queried.Height
 				}
+				break
 			}
 		}
 	}
 
 	if !ok {
-		return TxResult{}, fmt.Errorf("deposit tx %s broadcast but EventDeposit not found (depositId unavailable)", tx.TxHash)
+		return TxResult{}, fmt.Errorf("deposit tx %s committed but EventDeposit not found after polling (depositId unavailable)", tx.TxHash)
 	}
 
 	return TxResult{
