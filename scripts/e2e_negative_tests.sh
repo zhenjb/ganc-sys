@@ -52,26 +52,10 @@ ALICE="$("$CHAIN_BINARY" keys show "$SIGNER" -a --keyring-backend "$KEYRING" 2>/
 [ -n "$ALICE" ] || die "cannot resolve address for '$SIGNER'"
 rm -rf "$WORK_DIR"; mkdir -p "$WORK_DIR"; cd "$WORK_DIR"
 
-# N6 (self-contained): deposit 100, then request withdraw >> balance -> rejected.
-phase "N6 — Over-withdraw (> deposited) must be rejected"
-curl -s -X POST "$API/api/deposit" -H 'Content-Type: application/json' \
-  -d "{\"owner\":\"$ALICE\",\"denom\":\"$DENOM\",\"amount\":\"100\"}" -o n6_dep.json
-N6_DEP="$(jget n6_dep.json "d['depositRecord']['depositId']")"; [ -n "$N6_DEP" ] || die "N6 deposit failed"
-sleep "$COMMIT_WAIT"
-CODE="$(curl -s -o n6_wd.json -w '%{http_code}' -X POST "$API/api/withdraw-request" -H 'Content-Type: application/json' \
-  -d "{\"owner\":\"$ALICE\",\"denom\":\"$DENOM\",\"amount\":\"999999999\",\"destination\":\"$ALICE\"}")"
-if [ "$CODE" -ge 400 ]; then
-  ok "over-withdraw rejected at request (HTTP $CODE)"
-else
-  N6_WD="$(jget n6_wd.json "d['withdrawRequest']['withdrawId']")"
-  note "request accepted (HTTP $CODE) — backend defers; checking build with the over-withdraw id"
-  CODE2="$(curl -s -o n6_build.json -w '%{http_code}' -X POST "$API/api/batch/build" -H 'Content-Type: application/json' \
-    -d "{\"depositIds\":[\"$N6_DEP\"],\"withdrawIds\":[\"$N6_WD\"]}")"
-  jget n6_build.json "d['settlementUpdate']['batchId']" >/dev/null 2>&1 \
-    && bad "over-withdraw NOT rejected (built a batch, HTTP $CODE2)" || ok "over-withdraw rejected at build (HTTP $CODE2)"
-fi
-
-# Build a clean happy-path proof for N1..N5 (separate deposit/withdraw).
+# Happy path FIRST on CLEAN state so its withdraw gets nonce=1 (== account
+# next-nonce). N6 (over-withdraw) runs LAST — the off-chain state tracks a
+# per-account sequential nonce, so a rejected withdraw done first would "burn"
+# nonce 1 and desync every later build.
 note "deposit 100 + withdraw 40 + build (explicit ids) + prove"
 curl -s -X POST "$API/api/deposit" -H 'Content-Type: application/json' \
   -d "{\"owner\":\"$ALICE\",\"denom\":\"$DENOM\",\"amount\":\"100\"}" -o deposit.json
@@ -122,6 +106,28 @@ CLAIMED="$(jget claim1.json "d['withdrawRecord']['claimed']")"
 sleep "$COMMIT_WAIT"
 CODE="$(curl -s -o claim2.json -w '%{http_code}' -X POST "$API/api/withdraw/claim" -H 'Content-Type: application/json' -d "{\"withdrawId\":\"$WD_ID\"}")"
 [ "$CODE" != "200" ] && ok "double claim rejected (HTTP $CODE)" || bad "double claim was accepted (HTTP 200)"
+
+# ---------------------------------------------------------------------------
+# N6 runs LAST: by now the happy withdraw (nonce 1) is settled, so this
+# over-withdraw takes the next nonce and is rejected on balance (or nonce) — not
+# desyncing anything earlier.
+phase "N6 — Over-withdraw (> balance) must be rejected"
+curl -s -X POST "$API/api/deposit" -H 'Content-Type: application/json' \
+  -d "{\"owner\":\"$ALICE\",\"denom\":\"$DENOM\",\"amount\":\"100\"}" -o n6_dep.json
+N6_DEP="$(jget n6_dep.json "d['depositRecord']['depositId']")"; [ -n "$N6_DEP" ] || die "N6 deposit failed"
+sleep "$COMMIT_WAIT"
+CODE="$(curl -s -o n6_wd.json -w '%{http_code}' -X POST "$API/api/withdraw-request" -H 'Content-Type: application/json' \
+  -d "{\"owner\":\"$ALICE\",\"denom\":\"$DENOM\",\"amount\":\"999999999\",\"destination\":\"$ALICE\"}")"
+if [ "$CODE" -ge 400 ]; then
+  ok "over-withdraw rejected at request (HTTP $CODE)"
+else
+  N6_WD="$(jget n6_wd.json "d['withdrawRequest']['withdrawId']")"
+  note "request accepted (HTTP $CODE) — backend defers; checking build with the over-withdraw id"
+  CODE2="$(curl -s -o n6_build.json -w '%{http_code}' -X POST "$API/api/batch/build" -H 'Content-Type: application/json' \
+    -d "{\"depositIds\":[\"$N6_DEP\"],\"withdrawIds\":[\"$N6_WD\"]}")"
+  jget n6_build.json "d['settlementUpdate']['batchId']" >/dev/null 2>&1 \
+    && bad "over-withdraw NOT rejected (built a batch, HTTP $CODE2)" || ok "over-withdraw rejected at build (HTTP $CODE2)"
+fi
 
 # ---------------------------------------------------------------------------
 phase "SUMMARY"
