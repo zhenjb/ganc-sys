@@ -79,6 +79,12 @@ GOT_VK="$(curl -s "$GAZK_URL/health" | python -c "import sys,json;print(json.loa
 [ "$GOT_VK" = "$EXPECTED_VK_ID" ] && ok "gazk vkId=$GOT_VK" || warn "gazk vkId=$GOT_VK (expected $EXPECTED_VK_ID)"
 
 phase "backend (:$API_PORT) — REAL mode (memory store)"
+# Free the API port first: a STALE backend still holding it would shadow the new
+# build (the new go-run fails to bind, health check hits the old process).
+{ lsof -ti "tcp:$API_PORT" 2>/dev/null | xargs -r kill -9; } 2>/dev/null || true
+fuser -k "${API_PORT}/tcp" 2>/dev/null || true
+sleep 1
+: > /tmp/api.real.log
 (
   cd "$GANC_SYS_DIR" && \
   PORT="$API_PORT" \
@@ -94,7 +100,14 @@ phase "backend (:$API_PORT) — REAL mode (memory store)"
   go run ./cmd/api >/tmp/api.real.log 2>&1
 ) &
 wait_http "$API_BASE_URL/api/health" 60 || { tail -30 /tmp/api.real.log; die "backend did not start (see /tmp/api.real.log)"; }
-grep -q "real ZK verification enabled via remote prover" /tmp/api.real.log && ok "backend real ZK gate enabled" || warn "verify-gate log line missing"
+# This config ALWAYS logs the ZK-gate line. If it's missing, the new backend
+# failed to bind (a stale one is answering) — fail loudly instead of testing it.
+if grep -q "real ZK verification enabled via remote prover" /tmp/api.real.log; then
+  ok "backend real ZK gate enabled (fresh build)"
+else
+  tail -20 /tmp/api.real.log
+  die "backend ZK-gate log missing — a STALE backend is likely still on :$API_PORT (look for 'address already in use'). Kill it and re-run."
+fi
 ok "backend health OK"
 
 phase "READY"
