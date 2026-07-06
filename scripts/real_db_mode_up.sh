@@ -42,6 +42,10 @@ START_GAZK="${START_GAZK:-1}"
 DATABASE_URL="${DATABASE_URL:-postgres://ganc:ganc@localhost:5432/ganc_sys?sslmode=disable}"
 DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-5432}"
+# Pin the off-chain genesis root to the chain's genesis currentStateRoot so the
+# FIRST pending batch's oldStateRoot is accepted on-chain. ganc-trade seeds the
+# zkdex genesis root to the "0xrootA" placeholder, so match it here.
+OFFCHAIN_GENESIS_ROOT="${OFFCHAIN_GENESIS_ROOT:-0xrootA}"
 
 c_reset=$'\033[0m'; c_blue=$'\033[1;34m'; c_green=$'\033[1;32m'; c_red=$'\033[1;31m'; c_yellow=$'\033[1;33m'
 phase() { echo; echo "${c_blue}== $* ==${c_reset}"; }
@@ -109,6 +113,7 @@ sleep 1
   WITHDRAW_REQUEST_STORE=postgres WITHDRAW_RECORD_STORE=postgres \
   BATCH_BUILD_STORE=postgres PROOF_BUNDLE_STORE=postgres SUBMIT_BATCH_STORE=postgres \
   OFFCHAIN_SETTLEMENT_ENABLED=true BATCH_BUILD_SOURCE=pending \
+  OFFCHAIN_GENESIS_ROOT="$OFFCHAIN_GENESIS_ROOT" \
   go run ./cmd/api >/tmp/api.real.log 2>&1
 ) &
 wait_http "$API_BASE_URL/api/health" 90 || { tail -40 /tmp/api.real.log; die "backend did not start (see /tmp/api.real.log)"; }
@@ -130,6 +135,7 @@ cat <<EOF
   db       : $DATABASE_URL
   stores   : postgres (withdraw/batch/proof/submit) + offchain pending queue
   build    : BATCH_BUILD_SOURCE=pending  (batch/build auto-collects pending)
+  genesis  : OFFCHAIN_GENESIS_ROOT=$OFFCHAIN_GENESIS_ROOT  (matches chain genesis root)
   signer   : $RELAYER_FROM = $ALICE_ADDR
   denom    : $ASSET_DENOM
   logs     : /tmp/api.real.log , /tmp/gazk.real.log

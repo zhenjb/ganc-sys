@@ -40,6 +40,22 @@ func NewLocalState() *LocalState {
 	}
 }
 
+// NewLocalStateWithGenesisRoot initializes an empty off-chain state whose
+// genesis (empty-set) root is PINNED to genesisRoot instead of the computed
+// ComputeRoot(empty). This exists to match the on-chain zkdex module's genesis
+// currentStateRoot when the chain uses a placeholder genesis (e.g. "0xrootA")
+// rather than the computed root: the first batch's oldStateRoot then equals the
+// chain's current root and MsgSubmitBatchProof is accepted. Every root AFTER
+// the first apply is still the real ComputeRoot(state), so the chain follows
+// the off-chain transition chain from there. Empty genesisRoot => NewLocalState.
+func NewLocalStateWithGenesisRoot(genesisRoot string) *LocalState {
+	ls := NewLocalState()
+	if genesisRoot != "" {
+		ls.root = genesisRoot
+	}
+	return ls
+}
+
 func (s *LocalState) Root() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

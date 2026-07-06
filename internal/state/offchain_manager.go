@@ -54,6 +54,18 @@ func NewOffchainStateManager() *OffchainStateManager {
 	}
 }
 
+// NewOffchainStateManagerWithGenesisRoot pins the manager's genesis root so the
+// first pending batch's oldStateRoot equals the on-chain genesis
+// currentStateRoot (e.g. the chain's placeholder "0xrootA"). Without this the
+// off-chain genesis (ComputeRoot of the empty set) never matches a chain that
+// seeds a placeholder genesis, and the very first MsgSubmitBatchProof is
+// rejected with "oldStateRoot mismatch". Empty genesisRoot => default behavior.
+func NewOffchainStateManagerWithGenesisRoot(genesisRoot string) *OffchainStateManager {
+	return &OffchainStateManager{
+		ls: NewLocalStateWithGenesisRoot(genesisRoot),
+	}
+}
+
 // BuildWithdrawRequest dựng một WithdrawRequest từ user intent dựa trên
 // state sống của manager (STATE-04). Đây là entry point đúng kiến trúc cho
 // INT-06: nonce được derive per-account (`account.Nonce + 1`) qua

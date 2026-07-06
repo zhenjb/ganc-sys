@@ -42,7 +42,12 @@ func main() {
 	port := getenv("PORT", "8080")
 
 	memoryStore := store.NewMemoryStore()
-	offchainStateManager := appstate.NewOffchainStateManager()
+	// OFFCHAIN_GENESIS_ROOT pins the off-chain mirror's genesis root to the chain's
+	// genesis currentStateRoot (e.g. "0xrootA") so the first pending batch's
+	// oldStateRoot is accepted on-chain. Empty => computed ComputeRoot(empty).
+	offchainGenesisRoot := getenv("OFFCHAIN_GENESIS_ROOT", "")
+	offchainStateManager := appstate.NewOffchainStateManagerWithGenesisRoot(offchainGenesisRoot)
+	log.Printf("offchain genesis root=%q (empty=computed)", offchainGenesisRoot)
 
 	chainQueryMode := getenv("CHAIN_QUERY_MODE", "local")
 	chainRESTURL := getenv("CHAIN_REST_URL", "http://localhost:1317")
