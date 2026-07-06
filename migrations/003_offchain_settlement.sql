@@ -9,17 +9,13 @@ CREATE TABLE IF NOT EXISTS offchain_state_cursors (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-INSERT INTO offchain_state_cursors (
-    name,
-    committed_root,
-    pending_root
-)
-VALUES (
-    'default',
-    '0xrootA',
-    '0xrootA'
-)
-ON CONFLICT (name) DO NOTHING;
+-- NOTE: the 'default' cursor is intentionally NOT seeded here. The off-chain
+-- state manager's genesis root is ComputeRoot(empty account set) — a real
+-- sha256 value, NOT the placeholder "0xrootA". Seeding a placeholder made
+-- getOrInitCursor() reuse a committed_root that never matched the manager's
+-- genesis, so the pending-transition chain could not start (build failed with
+-- "cannot continue transition chain from root 0xrootA"). The service now lazily
+-- creates the cursor at the manager's true genesis root on first apply.
 
 CREATE TABLE IF NOT EXISTS offchain_pending_deposits (
     deposit_id TEXT PRIMARY KEY,
