@@ -47,6 +47,15 @@ DB_PORT="${DB_PORT:-5432}"
 # zkdex genesis root to the "0xrootA" placeholder, so match it here.
 OFFCHAIN_GENESIS_ROOT="${OFFCHAIN_GENESIS_ROOT:-0xrootA}"
 
+# The off-chain DB (pending queue + state cursor) MUST reset in lockstep with the
+# chain. Since `ganc chain` uses --reset-once (chain always boots at genesis
+# "0xrootA"), stale pending rows / an old cursor from a previous run would (a)
+# collide on the unique nullifier index and (b) break the transition chain
+# ("cannot continue from <old root>"). Default: reset. Set RESET_OFFCHAIN_DB=0
+# ONLY if you did NOT reset the chain and want to keep the durable queue.
+RESET_OFFCHAIN_DB="${RESET_OFFCHAIN_DB:-1}"
+PG_CONTAINER="${PG_CONTAINER:-ganc-pg}"
+
 c_reset=$'\033[0m'; c_blue=$'\033[1;34m'; c_green=$'\033[1;32m'; c_red=$'\033[1;31m'; c_yellow=$'\033[1;33m'
 phase() { echo; echo "${c_blue}== $* ==${c_reset}"; }
 ok()   { echo "${c_green}[ ok ]${c_reset} $*"; }
@@ -96,6 +105,26 @@ phase "backend (:$API_PORT) — REAL mode + Postgres + off-chain settlement"
 { lsof -ti "tcp:$API_PORT" 2>/dev/null | xargs -r kill -9; } 2>/dev/null || true
 fuser -k "${API_PORT}/tcp" 2>/dev/null || true
 sleep 1
+
+# Reset the off-chain DB to match the fresh chain (must happen AFTER the old
+# backend is killed and BEFORE the new one starts + rehydrates).
+if [ "$RESET_OFFCHAIN_DB" = "1" ]; then
+  if docker exec -i "$PG_CONTAINER" psql -U ganc -d ganc_sys >/dev/null 2>&1 <<'SQL'
+TRUNCATE offchain_pending_deposits, offchain_pending_withdrawals,
+         withdraw_requests, indexed_deposits, batch_builds,
+         proof_bundles, submit_batches, indexed_withdraw_records;
+DELETE FROM offchain_state_cursors;
+ALTER SEQUENCE withdraw_request_seq RESTART;
+SQL
+  then
+    ok "off-chain DB reset (pending queue + cursor cleared — matches fresh chain)"
+  else
+    warn "off-chain DB reset skipped (container '$PG_CONTAINER' unreachable). If you reset the chain, clear it manually or set the right PG_CONTAINER."
+  fi
+else
+  warn "RESET_OFFCHAIN_DB=0 — keeping durable queue. Only correct if the chain was NOT reset."
+fi
+
 : > /tmp/api.real.log
 (
   cd "$GANC_SYS_DIR" && \
