@@ -29,17 +29,30 @@ die()  { echo "${c_red}FATAL:${c_reset} $*" >&2; exit 1; }
 
 command -v docker >/dev/null || die "docker not found (chạy script này TRONG Codespace)"
 
-# 1. Start or reuse the container.
-if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
-  ok "container '$CONTAINER' đang chạy"
-elif docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER"; then
-  docker start "$CONTAINER" >/dev/null && ok "khởi động lại container '$CONTAINER'"
-else
+# 1. Start or reuse the container. Self-heals a stale/orphaned runtime state
+#    (common after the Codespace is stopped/restarted: the container shows in
+#    `docker ps -a` but its runc task is broken and `docker start` fails with
+#    "container with given ID already exists") by force-recreating.
+run_fresh() {
   docker run -d --name "$CONTAINER" \
     -e POSTGRES_USER="$PG_USER" -e POSTGRES_PASSWORD="$PG_PASS" -e POSTGRES_DB="$PG_DB" \
     -p "${PG_PORT}:5432" "$PG_IMAGE" >/dev/null \
     || die "docker run thất bại"
   ok "tạo container '$CONTAINER' ($PG_IMAGE) trên :$PG_PORT"
+}
+
+if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
+  ok "container '$CONTAINER' đang chạy"
+elif docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER"; then
+  if docker start "$CONTAINER" >/dev/null 2>&1; then
+    ok "khởi động lại container '$CONTAINER'"
+  else
+    warn "start '$CONTAINER' lỗi (runtime state hỏng) — recreate"
+    docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+    run_fresh
+  fi
+else
+  run_fresh
 fi
 
 # 2. Wait for readiness.
