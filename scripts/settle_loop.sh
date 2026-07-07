@@ -43,6 +43,24 @@ echo "${c_blue}== settlement sequencer ==${c_reset}"
 echo "  API=$API   interval=${INTERVAL}s   oneshot=$ONESHOT"
 echo "  drains pending  ->  build -> prove -> submit   (Ctrl-C to stop)"
 
+# Reopen an included-but-unsettled batch so its deposits/withdrawals return to
+# the pending queue. Without this a prove/submit failure would strand the ops in
+# the `included` state forever — never pending (loop skips them), never
+# committed (no on-chain record) — so the user could never claim. The next pass
+# rebuilds them (now correctly bounded to one withdrawal).
+cancel_batch() {
+  local batch="$1" reason="$2" ccode
+  [ -n "$batch" ] || return 0
+  ccode="$(curl -s -o "$W/cancel.json" -w '%{http_code}' -X POST \
+    "$API/api/internal/offchain-settlement/batches/$batch/cancel" \
+    -H 'Content-Type: application/json' -d "{\"reason\":\"$reason\"}")"
+  if [ "$ccode" = "200" ]; then
+    log "${c_dim}reopened batchId=$batch (ops back to pending)${c_reset}"
+  else
+    err "cancel failed (HTTP $ccode) for batchId=$batch: $(cat "$W/cancel.json")"
+  fi
+}
+
 # One settlement pass. Returns: 0 settled, 2 idle (nothing pending), 1 error.
 settle_once() {
   local code
@@ -61,13 +79,13 @@ settle_once() {
   python -c "import json;d=json.load(open('$W/build.json'));json.dump({'settlementUpdate':d['settlementUpdate'],'batchCommitments':d['batchCommitments'],'witness':d['witness']},open('$W/gen.json','w'))"
   code="$(curl -s -o "$W/proof.json" -w '%{http_code}' -X POST "$API/api/proof/generate" \
     -H 'Content-Type: application/json' -d @"$W/gen.json")"
-  [ "$code" = "200" ] || { err "prove failed (HTTP $code): $(cat "$W/proof.json")"; return 1; }
+  [ "$code" = "200" ] || { err "prove failed (HTTP $code): $(cat "$W/proof.json")"; cancel_batch "$batch" "prove failed"; return 1; }
 
   # submit
   python -c "import json;b=json.load(open('$W/build.json'));p=json.load(open('$W/proof.json'));json.dump({'settlementUpdate':b['settlementUpdate'],'batchCommitments':b['batchCommitments'],'proofBundle':p['proofBundle']},open('$W/submit_req.json','w'))"
   code="$(curl -s -o "$W/submit_resp.json" -w '%{http_code}' -X POST "$API/api/batch/submit" \
     -H 'Content-Type: application/json' -d @"$W/submit_req.json")"
-  [ "$code" = "200" ] || { err "submit failed (HTTP $code): $(cat "$W/submit_resp.json")"; return 1; }
+  [ "$code" = "200" ] || { err "submit failed (HTTP $code): $(cat "$W/submit_resp.json")"; cancel_batch "$batch" "submit failed"; return 1; }
 
   local accepted txhash
   accepted="$(jget "$W/submit_resp.json" "['accepted']")"
@@ -75,7 +93,7 @@ settle_once() {
   if [ "$accepted" = "True" ]; then
     ok "SETTLED  batchId=$batch  accepted  txHash=$txhash"; return 0
   fi
-  err "submit NOT accepted: batchId=$batch (accepted=$accepted) $(cat "$W/submit_resp.json")"; return 1
+  err "submit NOT accepted: batchId=$batch (accepted=$accepted) $(cat "$W/submit_resp.json")"; cancel_batch "$batch" "submit not accepted"; return 1
 }
 
 if [ "$ONESHOT" = "1" ]; then
