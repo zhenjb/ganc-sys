@@ -20,6 +20,7 @@ import (
 	"github.com/zhenjb/ganc-sys/internal/prover"
 	"github.com/zhenjb/ganc-sys/internal/relayer"
 	"github.com/zhenjb/ganc-sys/internal/repository"
+	"github.com/zhenjb/ganc-sys/internal/sequencer"
 	"github.com/zhenjb/ganc-sys/internal/service"
 	appstate "github.com/zhenjb/ganc-sys/internal/state"
 	"github.com/zhenjb/ganc-sys/internal/store"
@@ -227,6 +228,24 @@ func main() {
 		preflightProverArtifact(proverClient, expectedArtifact, preflightStrict)
 	} else {
 		log.Printf("batch submit real ZK verification disabled (proverMode=%s, enabled=%v)", proverMode, proofVerifyEnabled)
+	}
+
+	// In-process settlement sequencer (the "operator"). It drains the off-chain
+	// pending queue and settles it on-chain (build -> prove -> submit) on an
+	// interval, mirroring the deposit poller: settlement is a core backend
+	// responsibility, not an external script. Enabled only in DB-backed pending
+	// mode. When enabled, scripts/settle_loop.sh must NOT run concurrently
+	// (single-writer). Started here — after the batch service's ZK verifier is
+	// wired — so the worker settles through the same verified path as the HTTP API.
+	if getenv("SETTLEMENT_WORKER_ENABLED", "false") == "true" &&
+		batchBuildSource == service.BatchBuildSourcePending &&
+		offchainSettlementService != nil {
+		interval := parseDurationOr(getenv("SETTLEMENT_INTERVAL", "8s"), 8*time.Second)
+		seq := sequencer.New(batchService, proofService, offchainSettlementService, interval)
+		go seq.Run(context.Background())
+		log.Printf("settlement sequencer started (in-process): interval=%s", interval)
+	} else {
+		log.Printf("settlement sequencer disabled (set SETTLEMENT_WORKER_ENABLED=true with BATCH_BUILD_SOURCE=pending; scripts/settle_loop.sh is dev-only)")
 	}
 
 	chainQueryService := service.NewChainQueryService(chainQueryClient)
@@ -509,4 +528,15 @@ func getenv(key string, fallback string) string {
 	}
 
 	return value
+}
+
+// parseDurationOr parses a Go duration string (e.g. "8s", "500ms"), falling
+// back to the provided default on empty or invalid input.
+func parseDurationOr(value string, fallback time.Duration) time.Duration {
+	d, err := time.ParseDuration(value)
+	if err != nil || d <= 0 {
+		log.Printf("invalid duration %q, using %s", value, fallback)
+		return fallback
+	}
+	return d
 }

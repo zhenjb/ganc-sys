@@ -56,6 +56,21 @@ OFFCHAIN_GENESIS_ROOT="${OFFCHAIN_GENESIS_ROOT:-0xrootA}"
 RESET_OFFCHAIN_DB="${RESET_OFFCHAIN_DB:-1}"
 PG_CONTAINER="${PG_CONTAINER:-ganc-pg}"
 
+# In-process settlement sequencer (the "operator"). Default ON — it is the
+# production driver now: the backend itself drains the pending queue and does
+# build->prove->submit on an interval. Set SETTLEMENT_WORKER_ENABLED=false to
+# disable it and drive settlement manually with scripts/settle_loop.sh instead.
+# Do NOT run both at once (single-writer: they would race for the same pending).
+SETTLEMENT_WORKER_ENABLED="${SETTLEMENT_WORKER_ENABLED:-true}"
+SETTLEMENT_INTERVAL="${SETTLEMENT_INTERVAL:-8s}"
+
+# By default this script stays ATTACHED after startup: it streams the backend
+# log to your terminal and Ctrl-C stops the backend (and gazk, if it started
+# it). Set DETACH=1 to keep the old behaviour — start everything in the
+# background, print READY, and exit (useful for scripted e2e runs).
+DETACH="${DETACH:-0}"
+STARTED_GAZK=0
+
 c_reset=$'\033[0m'; c_blue=$'\033[1;34m'; c_green=$'\033[1;32m'; c_red=$'\033[1;31m'; c_yellow=$'\033[1;33m'
 phase() { echo; echo "${c_blue}== $* ==${c_reset}"; }
 ok()   { echo "${c_green}[ ok ]${c_reset} $*"; }
@@ -63,6 +78,26 @@ warn() { echo "${c_yellow}[warn]${c_reset} $*"; }
 die()  { echo "${c_red}FATAL:${c_reset} $*" >&2; exit 1; }
 wait_http() { local i; for i in $(seq 1 "${2:-60}"); do curl -sf "$1" >/dev/null 2>&1 && return 0; sleep 1; done; return 1; }
 tcp_up()    { (exec 3<>"/dev/tcp/$1/$2") 2>/dev/null && exec 3>&- && return 0 || return 1; }
+
+# Kill whatever listens on a TCP port (the compiled backend/gazk binaries that
+# `go run` spawned; killing `go run` alone would leave the child running).
+kill_port() {
+  { lsof -ti "tcp:$1" 2>/dev/null | xargs -r kill -9; } 2>/dev/null || true
+  fuser -k "$1/tcp" 2>/dev/null || true
+}
+
+# Ctrl-C handler for attached mode: tear down the backend (and gazk if we
+# started it) so the terminal returns cleanly instead of orphaning processes.
+cleanup() {
+  echo; echo "${c_yellow}stopping backend on :$API_PORT...${c_reset}"
+  kill_port "$API_PORT"
+  if [ "$STARTED_GAZK" = "1" ]; then
+    echo "${c_yellow}stopping gazk on :$GAZK_PORT...${c_reset}"
+    kill_port "$GAZK_PORT"
+  fi
+  exit 0
+}
+trap cleanup INT TERM
 
 phase "Preconditions"
 command -v "$CHAIN_BINARY" >/dev/null || die "$CHAIN_BINARY not in PATH (need the ganc-trade node running)"
@@ -93,6 +128,7 @@ if curl -sf "$GAZK_URL/health" >/dev/null 2>&1; then
   ok "gazk already up"
 elif [ "$START_GAZK" = "1" ] && [ -d "$GAZK_DIR" ]; then
   ( cd "$GAZK_DIR" && GAZK_ADDR=":$GAZK_PORT" go run main.go server >/tmp/gazk.real.log 2>&1 ) &
+  STARTED_GAZK=1
   wait_http "$GAZK_URL/health" 120 || die "gazk did not become healthy (see /tmp/gazk.real.log)"
   ok "gazk started"
 else
@@ -102,8 +138,7 @@ GOT_VK="$(curl -s "$GAZK_URL/health" | python -c "import sys,json;print(json.loa
 [ "$GOT_VK" = "$EXPECTED_VK_ID" ] && ok "gazk vkId=$GOT_VK" || warn "gazk vkId=$GOT_VK (expected $EXPECTED_VK_ID)"
 
 phase "backend (:$API_PORT) — REAL mode + Postgres + off-chain settlement"
-{ lsof -ti "tcp:$API_PORT" 2>/dev/null | xargs -r kill -9; } 2>/dev/null || true
-fuser -k "${API_PORT}/tcp" 2>/dev/null || true
+kill_port "$API_PORT"
 sleep 1
 
 # Reset the off-chain DB to match the fresh chain (must happen AFTER the old
@@ -143,6 +178,7 @@ fi
   BATCH_BUILD_STORE=postgres PROOF_BUNDLE_STORE=postgres SUBMIT_BATCH_STORE=postgres \
   OFFCHAIN_SETTLEMENT_ENABLED=true BATCH_BUILD_SOURCE=pending \
   OFFCHAIN_GENESIS_ROOT="$OFFCHAIN_GENESIS_ROOT" \
+  SETTLEMENT_WORKER_ENABLED="$SETTLEMENT_WORKER_ENABLED" SETTLEMENT_INTERVAL="$SETTLEMENT_INTERVAL" \
   go run ./cmd/api >/tmp/api.real.log 2>&1
 ) &
 wait_http "$API_BASE_URL/api/health" 90 || { tail -40 /tmp/api.real.log; die "backend did not start (see /tmp/api.real.log)"; }
@@ -154,6 +190,16 @@ grep -q "real ZK verification enabled via remote prover" /tmp/api.real.log \
 grep -q "offchain settlement enabled=true" /tmp/api.real.log \
   && ok "off-chain settlement enabled (postgres pending queue)" \
   || { tail -30 /tmp/api.real.log; die "off-chain settlement NOT enabled — check DATABASE_URL / stores env."; }
+
+# In-process sequencer marker. When enabled, the backend auto-settles — no need
+# to run scripts/settle_loop.sh separately.
+if [ "$SETTLEMENT_WORKER_ENABLED" = "true" ]; then
+  grep -q "settlement sequencer started (in-process)" /tmp/api.real.log \
+    && ok "in-process settlement sequencer RUNNING (interval=$SETTLEMENT_INTERVAL) — auto build->prove->submit" \
+    || { tail -30 /tmp/api.real.log; die "sequencer did NOT start — check SETTLEMENT_WORKER_ENABLED / BATCH_BUILD_SOURCE=pending."; }
+else
+  warn "in-process sequencer DISABLED — drive settlement manually: bash scripts/settle_loop.sh"
+fi
 ok "backend health OK"
 
 phase "READY (DB mode)"
@@ -167,8 +213,32 @@ cat <<EOF
   genesis  : OFFCHAIN_GENESIS_ROOT=$OFFCHAIN_GENESIS_ROOT  (matches chain genesis root)
   signer   : $RELAYER_FROM = $ALICE_ADDR
   denom    : $ASSET_DENOM
+  sequencer: SETTLEMENT_WORKER_ENABLED=$SETTLEMENT_WORKER_ENABLED (interval=$SETTLEMENT_INTERVAL)
   logs     : /tmp/api.real.log , /tmp/gazk.real.log
 
-  Next (Phase 3): bash scripts/settle_loop.sh    # sequencer: auto build->prove->submit
-  Stop backend/gazk: kill the go processes on ports $API_PORT / $GAZK_PORT.
+  Backend runs in the BACKGROUND — its logs (incl. the sequencer) go to /tmp/api.real.log.
+  Watch settlement live:
+    tail -f /tmp/api.real.log | grep --line-buffered settlement-sequencer
+  Or watch the whole backend:
+    tail -f /tmp/api.real.log
+
+  Settlement is AUTOMATIC when the sequencer is enabled (above) — you do NOT need
+  scripts/settle_loop.sh. Just deposit + withdraw; the worker settles each pending
+  op and logs: "SETTLED batch=... txHash=...".
+  (Manual/dev only, and ONLY if SETTLEMENT_WORKER_ENABLED=false: bash scripts/settle_loop.sh)
 EOF
+
+if [ "$DETACH" = "1" ]; then
+  echo
+  ok "DETACH=1 — backend + gazk left running in the background. Logs: /tmp/api.real.log"
+  ok "Stop later: kill the go processes on ports $API_PORT / $GAZK_PORT."
+  exit 0
+fi
+
+echo
+echo "${c_blue}== streaming backend log — press Ctrl-C to STOP the backend ==${c_reset}"
+echo "${c_yellow}(tip: run 'DETACH=1 bash scripts/real_db_mode_up.sh' to start it in the background instead)${c_reset}"
+echo
+# Foreground stream. On Ctrl-C the INT trap (cleanup) tears down backend + gazk.
+# NOT exec'd, so the trap stays installed to run cleanup.
+tail -n +1 -f /tmp/api.real.log

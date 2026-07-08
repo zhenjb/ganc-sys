@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
 #
-# settle_loop.sh (Phase 3) — settlement sequencer (the "operator" process).
+# settle_loop.sh — DEV / MANUAL settlement driver.
 # ---------------------------------------------------------------------------
-# Users never trigger settlement. This standalone loop plays the operator role:
+# NOTE: The settlement sequencer now runs IN-PROCESS inside the backend
+# (internal/sequencer, started from cmd/api when SETTLEMENT_WORKER_ENABLED=true
+# with BATCH_BUILD_SOURCE=pending). That in-process worker is the production
+# "operator". This script is kept only as a manual/dev tool — e.g. a one-shot
+# settle (ONESHOT=1) for scripted e2e tests, or driving settlement when the
+# in-process worker is disabled.
+#
+# SINGLE-WRITER: do NOT run this loop while the in-process worker is enabled —
+# both would race for the same pending operations. Use one or the other.
+# ---------------------------------------------------------------------------
+# This standalone loop plays the operator role over HTTP:
 # every SETTLE_INTERVAL seconds it drains the off-chain pending queue by calling
 #
 #     POST /api/batch/build   ({} — BATCH_BUILD_SOURCE=pending auto-collects)
