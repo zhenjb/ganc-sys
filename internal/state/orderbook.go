@@ -1,0 +1,449 @@
+package state
+
+import (
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+	"sync"
+
+	"github.com/zhenjb/ganc-sys/pkg/types"
+)
+
+// STATE-T04 — Orderbook structure.
+//
+// A per-market book of resting orders with strict PRICE-TIME priority. It is the
+// deterministic data source the matching engine (STATE-T05) iterates: given the
+// same sequence of inserts it always produces the same best-order ordering, so a
+// replay (P2 proving) yields the identical fill sequence.
+//
+// Determinism rules (plan pitfalls):
+//   - The match loop NEVER iterates a Go map (map order is randomized). Levels
+//     are kept in a sorted key slice; orders within a level in a FIFO slice.
+//   - Priority is the TOTAL order (price, sequence): price first, then the
+//     internal monotonic receive sequence — no ties, no clock, no randomness.
+//
+// Price/qty are exact decimals (STATE-T03 decimal.go); collateral amounts are
+// integer smallest-units. The book couples to reserved balance (STATE-T02) via
+// an optional controller: Insert reserves, Cancel releases.
+
+var (
+	// ErrOrderNotAccepted is returned when Insert is given a verdict that did
+	// not pass validation (STATE-T03). Sentinel — errors.Is.
+	ErrOrderNotAccepted = errors.New("orderbook: order was not accepted by validation")
+	// ErrWrongMarket is returned when an order's market does not match the book.
+	ErrWrongMarket = errors.New("orderbook: order market does not match book")
+	// ErrOrderExists is returned when inserting an orderHash already in the book.
+	ErrOrderExists = errors.New("orderbook: order already in book")
+	// ErrOrderNotFound is returned by Cancel/Reduce/RemainingQty for an unknown
+	// orderHash. Sentinel — errors.Is.
+	ErrOrderNotFound = errors.New("orderbook: order not found")
+	// ErrInvalidFill is returned when a reduce/fill qty is non-positive or
+	// exceeds the order's remaining. Sentinel — errors.Is.
+	ErrInvalidFill = errors.New("orderbook: invalid fill quantity")
+)
+
+// ReservationController is the STATE-T02 surface the book uses to lock collateral
+// on insert and release it on cancel. *OffchainStateManager satisfies it. May be
+// nil (book-only / structural use, e.g. inside the matching engine which manages
+// reservations itself).
+type ReservationController interface {
+	Reserve(owner, denom, amount, orderHash string) (string, error)
+	ReleaseOrder(orderHash string) (string, error)
+}
+
+// OrderNullifierMarker records an order's nullifier as consumed on cancel (so a
+// cancelled order cannot be replayed — STATE-T03). *InMemoryOrderNullifiers
+// satisfies it. May be nil.
+type OrderNullifierMarker interface {
+	MarkUsed(nullifier string)
+}
+
+// RestingOrder is an immutable view of a live order in the book. Best/Snapshot
+// return copies so callers cannot mutate book state directly (use Reduce/Cancel).
+type RestingOrder struct {
+	OrderHash      string          `json:"orderHash"`
+	OrderNullifier string          `json:"orderNullifier"`
+	Owner          string          `json:"owner"`
+	Side           types.OrderSide `json:"side"`
+	Price          string          `json:"price"`
+	Qty            string          `json:"qty"`
+	Remaining      string          `json:"remaining"`
+	Sequence       uint64          `json:"sequence"`
+	ReserveDenom   string          `json:"reserveDenom"`
+}
+
+// restingOrder is the mutable internal record (Remaining changes on partial fill).
+type restingOrder struct {
+	view     RestingOrder
+	priceKey string
+}
+
+type priceLevel struct {
+	key    string
+	price  decimal
+	orders []*restingOrder // FIFO by sequence
+}
+
+// bookSide holds all resting orders of one side (bids or asks). Levels are kept
+// in sortedKeys ASCENDING by price; the side determines which end is "best"
+// (bids: highest price; asks: lowest price). Within a level, orders are FIFO
+// (earliest sequence first).
+type bookSide struct {
+	side       types.OrderSide
+	levels     map[string]*priceLevel
+	sortedKeys []string
+	index      map[string]*restingOrder // orderHash -> order
+}
+
+func newBookSide(side types.OrderSide) *bookSide {
+	return &bookSide{
+		side:   side,
+		levels: make(map[string]*priceLevel),
+		index:  make(map[string]*restingOrder),
+	}
+}
+
+func (s *bookSide) insert(ro *restingOrder, price decimal) {
+	level, ok := s.levels[ro.priceKey]
+	if !ok {
+		level = &priceLevel{key: ro.priceKey, price: price}
+		s.levels[ro.priceKey] = level
+		// Binary-insert the key so sortedKeys stays ascending by price.
+		i := sort.Search(len(s.sortedKeys), func(i int) bool {
+			return cmpDecimal(s.levels[s.sortedKeys[i]].price, price) >= 0
+		})
+		s.sortedKeys = append(s.sortedKeys, "")
+		copy(s.sortedKeys[i+1:], s.sortedKeys[i:])
+		s.sortedKeys[i] = ro.priceKey
+	}
+	level.orders = append(level.orders, ro)
+	s.index[ro.view.OrderHash] = ro
+}
+
+// best returns the top-priority order of this side, or nil if empty.
+func (s *bookSide) best() *restingOrder {
+	if len(s.sortedKeys) == 0 {
+		return nil
+	}
+	var key string
+	if s.side == types.SideBuy {
+		key = s.sortedKeys[len(s.sortedKeys)-1] // highest price
+	} else {
+		key = s.sortedKeys[0] // lowest price
+	}
+	level := s.levels[key]
+	if len(level.orders) == 0 {
+		return nil
+	}
+	return level.orders[0] // earliest sequence
+}
+
+func (s *bookSide) remove(orderHash string) bool {
+	ro, ok := s.index[orderHash]
+	if !ok {
+		return false
+	}
+	level := s.levels[ro.priceKey]
+	for i, o := range level.orders {
+		if o.view.OrderHash == orderHash {
+			level.orders = append(level.orders[:i], level.orders[i+1:]...)
+			break
+		}
+	}
+	if len(level.orders) == 0 {
+		delete(s.levels, ro.priceKey)
+		for i, k := range s.sortedKeys {
+			if k == ro.priceKey {
+				s.sortedKeys = append(s.sortedKeys[:i], s.sortedKeys[i+1:]...)
+				break
+			}
+		}
+	}
+	delete(s.index, orderHash)
+	return true
+}
+
+// ordered returns this side's resting orders in priority order (best first).
+func (s *bookSide) ordered() []RestingOrder {
+	out := make([]RestingOrder, 0, len(s.index))
+	if s.side == types.SideBuy {
+		for i := len(s.sortedKeys) - 1; i >= 0; i-- {
+			for _, o := range s.levels[s.sortedKeys[i]].orders {
+				out = append(out, o.view)
+			}
+		}
+	} else {
+		for _, k := range s.sortedKeys {
+			for _, o := range s.levels[k].orders {
+				out = append(out, o.view)
+			}
+		}
+	}
+	return out
+}
+
+// Orderbook is the per-market price-time book. Thread-safe.
+type Orderbook struct {
+	mu          sync.Mutex
+	market      string
+	bids        *bookSide
+	asks        *bookSide
+	seq         uint64
+	reservation ReservationController
+	nullifiers  OrderNullifierMarker
+}
+
+// NewOrderbook builds an empty book for a market. reservation/nullifiers may be
+// nil (structural use); when set, Insert reserves collateral and Cancel releases
+// it and marks the order nullifier consumed.
+func NewOrderbook(market string, reservation ReservationController, nullifiers OrderNullifierMarker) *Orderbook {
+	return &Orderbook{
+		market:      strings.TrimSpace(market),
+		bids:        newBookSide(types.SideBuy),
+		asks:        newBookSide(types.SideSell),
+		reservation: reservation,
+		nullifiers:  nullifiers,
+	}
+}
+
+// Market returns the book's market id.
+func (b *Orderbook) Market() string { return b.market }
+
+// Insert rests a validated order into the book with PRICE-TIME priority. It
+// accepts ONLY an order whose verdict.Accepted is true (STATE-T03). When a
+// reservation controller is set, it first locks the verdict's collateral
+// (available -> reserved); if that fails the order is NOT added. Returns the
+// resting-order view.
+func (b *Orderbook) Insert(order types.SignedOrder, verdict OrderValidation) (RestingOrder, error) {
+	if !verdict.Accepted {
+		return RestingOrder{}, fmt.Errorf("%w: %s", ErrOrderNotAccepted, verdict.Reason)
+	}
+	if strings.TrimSpace(order.Market) != b.market {
+		return RestingOrder{}, fmt.Errorf("%w: order market %q, book %q", ErrWrongMarket, order.Market, b.market)
+	}
+	if !order.Side.IsValid() {
+		return RestingOrder{}, fmt.Errorf("%w: side %q", types.ErrInvalidOrder, order.Side)
+	}
+	price, err := parsePositiveDecimal(order.Price)
+	if err != nil {
+		return RestingOrder{}, fmt.Errorf("orderbook: price %q: %w", order.Price, err)
+	}
+	if _, err := parsePositiveDecimal(order.Qty); err != nil {
+		return RestingOrder{}, fmt.Errorf("orderbook: qty %q: %w", order.Qty, err)
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if _, exists := b.side(order.Side).index[verdict.OrderHash]; exists {
+		return RestingOrder{}, fmt.Errorf("%w: %s", ErrOrderExists, verdict.OrderHash)
+	}
+
+	// Lock collateral before resting the order. If Reserve fails (e.g. someone
+	// else drained available), the order is rejected and the book is untouched.
+	if b.reservation != nil {
+		if _, err := b.reservation.Reserve(order.Owner, verdict.ReserveDenom, verdict.ReserveAmount, verdict.OrderHash); err != nil {
+			return RestingOrder{}, fmt.Errorf("orderbook: reserve for %s: %w", verdict.OrderHash, err)
+		}
+	}
+
+	b.seq++
+	ro := &restingOrder{
+		priceKey: price.String(),
+		view: RestingOrder{
+			OrderHash:      verdict.OrderHash,
+			OrderNullifier: verdict.OrderNullifier,
+			Owner:          strings.TrimSpace(order.Owner),
+			Side:           order.Side,
+			Price:          order.Price,
+			Qty:            order.Qty,
+			Remaining:      order.Qty,
+			Sequence:       b.seq,
+			ReserveDenom:   verdict.ReserveDenom,
+		},
+	}
+	b.side(order.Side).insert(ro, price)
+	return ro.view, nil
+}
+
+// Cancel removes an order from the book and, when wired, releases its remaining
+// reserved collateral (STATE-T02) and marks its nullifier consumed (STATE-T03)
+// so it cannot be replayed. Returns ErrOrderNotFound for an unknown orderHash.
+func (b *Orderbook) Cancel(orderHash string) error {
+	orderHash = strings.TrimSpace(orderHash)
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	ro := b.lookupLocked(orderHash)
+	if ro == nil {
+		return fmt.Errorf("%w: %s", ErrOrderNotFound, orderHash)
+	}
+	nullifier := ro.view.OrderNullifier
+
+	if !b.side(ro.view.Side).remove(orderHash) {
+		return fmt.Errorf("%w: %s", ErrOrderNotFound, orderHash)
+	}
+	if b.reservation != nil {
+		if _, err := b.reservation.ReleaseOrder(orderHash); err != nil {
+			return fmt.Errorf("orderbook: release on cancel %s: %w", orderHash, err)
+		}
+	}
+	if b.nullifiers != nil && nullifier != "" {
+		b.nullifiers.MarkUsed(nullifier)
+	}
+	return nil
+}
+
+// Reduce decrements an order's remaining quantity by fillQty (a partial fill).
+// Priority is preserved (the order keeps its price/sequence slot). When the
+// order becomes fully filled (remaining hits 0) it is removed from the book and
+// removed=true is returned. The matching engine (STATE-T05) drives this; it does
+// NOT release reservation here — filled collateral is consumed by STATE-T06.
+// Returns ErrOrderNotFound / ErrInvalidFill on bad input.
+func (b *Orderbook) Reduce(orderHash, fillQty string) (remaining string, removed bool, err error) {
+	orderHash = strings.TrimSpace(orderHash)
+	fill, derr := parsePositiveDecimal(fillQty)
+	if derr != nil {
+		return "", false, fmt.Errorf("%w: %q", ErrInvalidFill, fillQty)
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	ro := b.lookupLocked(orderHash)
+	if ro == nil {
+		return "", false, fmt.Errorf("%w: %s", ErrOrderNotFound, orderHash)
+	}
+	rem, derr := parsePositiveDecimal(ro.view.Remaining)
+	if derr != nil {
+		return "", false, fmt.Errorf("orderbook: corrupt remaining %q: %w", ro.view.Remaining, derr)
+	}
+	if cmpDecimal(fill, rem) > 0 {
+		return "", false, fmt.Errorf("%w: fill %s > remaining %s", ErrInvalidFill, fillQty, ro.view.Remaining)
+	}
+
+	newRem := subDecimal(rem, fill)
+	if isZeroDecimal(newRem) {
+		b.side(ro.view.Side).remove(orderHash)
+		return "0", true, nil
+	}
+	ro.view.Remaining = newRem.String()
+	return ro.view.Remaining, false, nil
+}
+
+// BestBid returns the highest-price, earliest bid, or ok=false if none.
+func (b *Orderbook) BestBid() (RestingOrder, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if ro := b.bids.best(); ro != nil {
+		return ro.view, true
+	}
+	return RestingOrder{}, false
+}
+
+// BestAsk returns the lowest-price, earliest ask, or ok=false if none.
+func (b *Orderbook) BestAsk() (RestingOrder, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if ro := b.asks.best(); ro != nil {
+		return ro.view, true
+	}
+	return RestingOrder{}, false
+}
+
+// RemainingQty returns the unfilled quantity of orderHash, or ErrOrderNotFound.
+func (b *Orderbook) RemainingQty(orderHash string) (string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if ro := b.lookupLocked(strings.TrimSpace(orderHash)); ro != nil {
+		return ro.view.Remaining, nil
+	}
+	return "", fmt.Errorf("%w: %s", ErrOrderNotFound, orderHash)
+}
+
+// BookSnapshot is a deterministic, priority-ordered view of the whole book.
+type BookSnapshot struct {
+	Market string         `json:"market"`
+	Bids   []RestingOrder `json:"bids"` // highest price first, then earliest
+	Asks   []RestingOrder `json:"asks"` // lowest price first, then earliest
+}
+
+// Snapshot returns the full book in priority order. Two books built from the
+// same insert sequence produce byte-identical snapshots (DoD: reproducibility).
+func (b *Orderbook) Snapshot() BookSnapshot {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return BookSnapshot{
+		Market: b.market,
+		Bids:   b.bids.ordered(),
+		Asks:   b.asks.ordered(),
+	}
+}
+
+func (b *Orderbook) side(side types.OrderSide) *bookSide {
+	if side == types.SideBuy {
+		return b.bids
+	}
+	return b.asks
+}
+
+func (b *Orderbook) lookupLocked(orderHash string) *restingOrder {
+	if ro, ok := b.bids.index[orderHash]; ok {
+		return ro
+	}
+	if ro, ok := b.asks.index[orderHash]; ok {
+		return ro
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// BookSet — per-market registry of orderbooks (P4 holds one set for all
+// markets). Thread-safe get-or-create.
+// ---------------------------------------------------------------------------
+
+// BookSet maps market id -> *Orderbook, sharing one reservation controller and
+// nullifier marker across all books.
+type BookSet struct {
+	mu          sync.Mutex
+	books       map[string]*Orderbook
+	reservation ReservationController
+	nullifiers  OrderNullifierMarker
+}
+
+// NewBookSet builds an empty set. reservation/nullifiers are passed to every
+// book it creates.
+func NewBookSet(reservation ReservationController, nullifiers OrderNullifierMarker) *BookSet {
+	return &BookSet{
+		books:       make(map[string]*Orderbook),
+		reservation: reservation,
+		nullifiers:  nullifiers,
+	}
+}
+
+// Book returns the orderbook for market, creating it on first use.
+func (s *BookSet) Book(market string) *Orderbook {
+	market = strings.TrimSpace(market)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if bk, ok := s.books[market]; ok {
+		return bk
+	}
+	bk := NewOrderbook(market, s.reservation, s.nullifiers)
+	s.books[market] = bk
+	return bk
+}
+
+// Markets returns the sorted list of markets that have a book.
+func (s *BookSet) Markets() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.books))
+	for m := range s.books {
+		out = append(out, m)
+	}
+	sort.Strings(out)
+	return out
+}

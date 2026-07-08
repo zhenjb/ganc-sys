@@ -144,3 +144,50 @@ func ceilDivBig(a, b *big.Int) *big.Int {
 	num := new(big.Int).Add(a, new(big.Int).Sub(b, big.NewInt(1)))
 	return num.Div(num, b)
 }
+
+// cmpDecimal compares a and b exactly: -1 if a<b, 0 if a==b, +1 if a>b. Equal
+// values with different scales (e.g. "10.5" and "10.50") compare equal.
+func cmpDecimal(a, b decimal) int {
+	am, bm := alignedMantissas(a, b)
+	return am.Cmp(bm)
+}
+
+// isZeroDecimal reports whether d == 0.
+func isZeroDecimal(d decimal) bool {
+	return d.mant.Sign() == 0
+}
+
+// subDecimal returns the exact a-b. Callers must ensure a >= b (the orderbook
+// guards fill <= remaining before subtracting) so the result is non-negative.
+func subDecimal(a, b decimal) decimal {
+	common := a.scale
+	if b.scale > common {
+		common = b.scale
+	}
+	am := new(big.Int).Mul(a.mant, pow10(common-a.scale))
+	bm := new(big.Int).Mul(b.mant, pow10(common-b.scale))
+	return decimal{mant: new(big.Int).Sub(am, bm), scale: common}
+}
+
+// String renders the decimal in canonical form: no leading zeros in the integer
+// part (except a single "0"), no trailing zeros in the fraction, no dot when
+// integral. So "10.50" and "010.5" both render "10.5". This canonical form is
+// used as the price-level key so economically-equal prices share one level.
+func (d decimal) String() string {
+	if d.mant.Sign() == 0 {
+		return "0"
+	}
+	digits := d.mant.String() // non-negative digits
+	if d.scale == 0 {
+		return digits
+	}
+	if len(digits) <= d.scale {
+		digits = strings.Repeat("0", d.scale-len(digits)+1) + digits
+	}
+	intPart := digits[:len(digits)-d.scale]
+	fracPart := strings.TrimRight(digits[len(digits)-d.scale:], "0")
+	if fracPart == "" {
+		return intPart
+	}
+	return intPart + "." + fracPart
+}
