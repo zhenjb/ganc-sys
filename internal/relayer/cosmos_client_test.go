@@ -3,8 +3,10 @@ package relayer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
@@ -305,6 +307,122 @@ func TestCosmosClientClaimWithdrawRejectsAlreadyClaimed(t *testing.T) {
 		},
 	}); err == nil {
 		t.Fatalf("expected error when withdraw already claimed")
+	}
+}
+
+// scriptedRunner returns per-call canned outputs, distinguishing `tx ...`
+// broadcasts from `query tx ...` confirmations so wait-for-commit and
+// sequence-mismatch retry can be exercised deterministically.
+type runnerResp struct {
+	out []byte
+	err error
+}
+
+type scriptedRunner struct {
+	txResponses    []runnerResp
+	queryResponses []runnerResp
+	txCalls        int
+	queryCalls     int
+}
+
+func (r *scriptedRunner) Run(_ context.Context, _ string, args ...string) ([]byte, error) {
+	isQuery := len(args) >= 2 && args[0] == "query" && args[1] == "tx"
+	pick := func(resps []runnerResp, idx int) runnerResp {
+		if idx < len(resps) {
+			return resps[idx]
+		}
+		return resps[len(resps)-1] // repeat last once exhausted
+	}
+	if isQuery {
+		resp := pick(r.queryResponses, r.queryCalls)
+		r.queryCalls++
+		return resp.out, resp.err
+	}
+	resp := pick(r.txResponses, r.txCalls)
+	r.txCalls++
+	return resp.out, resp.err
+}
+
+func TestCosmosClientSubmitBatchWaitsForCommit(t *testing.T) {
+	runner := &scriptedRunner{
+		txResponses: []runnerResp{
+			{out: []byte(`{"txhash":"HASH1","code":0,"raw_log":""}`)}, // CheckTx passed (mempool)
+		},
+		queryResponses: []runnerResp{
+			{err: errors.New("tx (HASH1) not found")},                  // still pending
+			{out: []byte(`{"txhash":"HASH1","code":0,"raw_log":""}`)},  // now in a block
+		},
+	}
+
+	client := NewCosmosClient(CosmosConfig{
+		From:            "relayer",
+		WaitForCommit:   true,
+		ConfirmInterval: time.Millisecond,
+	}, runner)
+
+	result, err := client.SubmitBatch(context.Background(), sampleSubmitInput())
+	if err != nil {
+		t.Fatalf("submit batch: %v", err)
+	}
+	if !result.Accepted || result.TxHash != "HASH1" {
+		t.Fatalf("expected accepted HASH1, got %+v", result)
+	}
+	if runner.queryCalls != 2 {
+		t.Fatalf("expected 2 confirmation polls (pending then committed), got %d", runner.queryCalls)
+	}
+}
+
+func TestCosmosClientSubmitBatchRetriesOnSequenceMismatch(t *testing.T) {
+	runner := &scriptedRunner{
+		txResponses: []runnerResp{
+			// First broadcast fails with the observed account-sequence error.
+			{out: []byte(`account sequence mismatch, expected 5, got 4: incorrect account sequence`), err: errors.New("exit status 1")},
+			// Retry re-queries the advanced sequence and succeeds.
+			{out: []byte(`{"txhash":"HASH2","code":0,"raw_log":""}`)},
+		},
+	}
+
+	client := NewCosmosClient(CosmosConfig{
+		From:          "relayer",
+		WaitForCommit: false,
+		SeqRetryDelay: time.Millisecond,
+	}, runner)
+
+	result, err := client.SubmitBatch(context.Background(), sampleSubmitInput())
+	if err != nil {
+		t.Fatalf("submit batch should recover from sequence mismatch: %v", err)
+	}
+	if !result.Accepted || result.TxHash != "HASH2" {
+		t.Fatalf("expected accepted HASH2 after retry, got %+v", result)
+	}
+	if runner.txCalls != 2 {
+		t.Fatalf("expected one retry (2 tx calls), got %d", runner.txCalls)
+	}
+}
+
+func TestCosmosClientSubmitBatchRejectedInBlock(t *testing.T) {
+	// CheckTx passes (code 0) but DeliverTx fails in the block (non-zero code).
+	// Wait-for-commit must surface this as a rejection, not a false accept.
+	runner := &scriptedRunner{
+		txResponses:    []runnerResp{{out: []byte(`{"txhash":"H3","code":0}`)}},
+		queryResponses: []runnerResp{{out: []byte(`{"txhash":"H3","code":11,"raw_log":"out of gas"}`)}},
+	}
+
+	client := NewCosmosClient(CosmosConfig{
+		From:            "relayer",
+		WaitForCommit:   true,
+		ConfirmInterval: time.Millisecond,
+	}, runner)
+
+	result, err := client.SubmitBatch(context.Background(), sampleSubmitInput())
+	if err == nil {
+		t.Fatalf("expected rejection when the committed tx code is non-zero")
+	}
+	if result.Accepted || result.ProofStatus != "rejected" {
+		t.Fatalf("expected accepted=false/rejected, got %+v", result)
+	}
+	if !strings.Contains(err.Error(), "out of gas") {
+		t.Fatalf("expected block error reason, got %v", err)
 	}
 }
 

@@ -345,9 +345,15 @@ func newRelayerClient(mode string) relayer.Client {
 			GasPrices:      os.Getenv("CHAIN_GAS_PRICES"),
 			Fees:           os.Getenv("CHAIN_FEES"),
 			BroadcastMode:  os.Getenv("CHAIN_BROADCAST_MODE"),
+			// Wait for each submit tx to be committed in a block before returning,
+			// so back-to-back settlements from the single relayer signer never hit
+			// "account sequence mismatch". Default ON; set RELAYER_WAIT_FOR_COMMIT=false
+			// to opt out (e.g. slow chains where you prefer fire-and-forget).
+			WaitForCommit:   getenv("RELAYER_WAIT_FOR_COMMIT", "true") == "true",
+			ConfirmInterval: parseDurationOr(getenv("RELAYER_CONFIRM_INTERVAL", "1s"), time.Second),
 		}
-		log.Printf("relayer cosmos mode: binary=%s chainID=%s node=%s from=%s",
-			cfg.Binary, cfg.ChainID, cfg.Node, cfg.From)
+		log.Printf("relayer cosmos mode: binary=%s chainID=%s node=%s from=%s waitForCommit=%v",
+			cfg.Binary, cfg.ChainID, cfg.Node, cfg.From, cfg.WaitForCommit)
 		return relayer.NewCosmosClient(cfg, nil)
 	case relayerModeLocal:
 		return relayer.NewLocalClient()

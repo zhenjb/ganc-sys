@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
@@ -42,6 +43,24 @@ type CosmosConfig struct {
 	GasPrices      string // --gas-prices (e.g. "0.025uusdc"); used if Fees empty
 	Fees           string // --fees (e.g. "2000uusdc"); takes precedence over GasPrices
 	BroadcastMode  string // --broadcast-mode (default "sync")
+
+	// WaitForCommit, when true, makes SubmitBatch poll `query tx <hash>` after a
+	// sync broadcast until the tx is included in a block, and reports Accepted
+	// based on the committed (DeliverTx) code — not the CheckTx code. This is
+	// REQUIRED when settling many batches back-to-back from a single signer: it
+	// serializes submits to block cadence so the auto-derived account sequence
+	// never collides ("account sequence mismatch"). It also upgrades Accepted
+	// from "passed CheckTx" to "actually in a block and succeeded".
+	WaitForCommit   bool
+	ConfirmAttempts int           // max `query tx` polls (default 30)
+	ConfirmInterval time.Duration // delay between polls (default 1s)
+
+	// SeqRetryMax / SeqRetryDelay retry a broadcast that fails with "account
+	// sequence mismatch" — a defense-in-depth net for any residual race (default
+	// 5 attempts, 1s apart). On retry the CLI re-queries the now-advanced
+	// sequence, so the resend succeeds.
+	SeqRetryMax   int
+	SeqRetryDelay time.Duration
 }
 
 func (c CosmosConfig) withDefaults() CosmosConfig {
@@ -59,6 +78,18 @@ func (c CosmosConfig) withDefaults() CosmosConfig {
 	}
 	if strings.TrimSpace(c.BroadcastMode) == "" {
 		c.BroadcastMode = "sync"
+	}
+	if c.ConfirmAttempts <= 0 {
+		c.ConfirmAttempts = 30
+	}
+	if c.ConfirmInterval <= 0 {
+		c.ConfirmInterval = 1 * time.Second
+	}
+	if c.SeqRetryMax <= 0 {
+		c.SeqRetryMax = 5
+	}
+	if c.SeqRetryDelay <= 0 {
+		c.SeqRetryDelay = 1 * time.Second
 	}
 	return c
 }
@@ -171,20 +202,37 @@ func (c *CosmosClient) SubmitBatch(ctx context.Context, input SubmitBatchInput) 
 		c.commonTxArgs(c.cfg.From)...,
 	)
 
-	out, runErr := c.runner.Run(ctx, c.cfg.Binary, args...)
-	tx, parseErr := parseTxOutput(out)
-	if runErr != nil && tx.TxHash == "" {
-		return SubmitBatchResult{}, fmt.Errorf("submit-batch-proof failed: %w: %s", runErr, strings.TrimSpace(string(out)))
+	tx, err := c.broadcast(ctx, args)
+	if err != nil {
+		return SubmitBatchResult{}, fmt.Errorf("submit-batch-proof failed: %w", err)
 	}
-	if parseErr != nil {
-		return SubmitBatchResult{}, fmt.Errorf("submit-batch-proof: %w", parseErr)
-	}
+	// CheckTx-level rejection (e.g. invalid proof caught in ante/handler).
 	if tx.Code != 0 {
 		return SubmitBatchResult{
 			TxHash:      tx.TxHash,
 			Accepted:    false,
 			ProofStatus: "rejected",
 		}, fmt.Errorf("submit-batch-proof rejected by chain (code=%d): %s", tx.Code, tx.RawLog)
+	}
+
+	// Wait for the tx to be included in a block so (a) the account sequence has
+	// advanced before the next submit (no "account sequence mismatch" when
+	// draining batches back-to-back) and (b) Accepted reflects the real
+	// DeliverTx result, not just CheckTx.
+	if c.cfg.WaitForCommit {
+		committed, waitErr := c.waitForTxCommit(ctx, tx.TxHash)
+		if waitErr != nil {
+			return SubmitBatchResult{TxHash: tx.TxHash}, fmt.Errorf(
+				"submit-batch-proof broadcast (tx=%s) but not confirmed in a block: %w", tx.TxHash, waitErr)
+		}
+		if committed.Code != 0 {
+			return SubmitBatchResult{
+				TxHash:      committed.TxHash,
+				Accepted:    false,
+				ProofStatus: "rejected",
+			}, fmt.Errorf("submit-batch-proof rejected in block (code=%d): %s", committed.Code, committed.RawLog)
+		}
+		tx = committed
 	}
 
 	withdrawRecords := make([]types.WithdrawRecord, 0, len(input.SettlementUpdate.Withdrawals))
@@ -247,6 +295,106 @@ func (c *CosmosClient) ClaimWithdraw(ctx context.Context, input ClaimWithdrawInp
 		TxHash:         tx.TxHash,
 		WithdrawRecord: claimed,
 	}, nil
+}
+
+// broadcast runs the tx CLI, retrying on an "account sequence mismatch" — a
+// transient error when a previous tx has not yet committed and advanced the
+// signer's on-chain sequence. On retry the CLI re-queries the (now advanced)
+// sequence, so the resend succeeds. Non-sequence failures return immediately.
+func (c *CosmosClient) broadcast(ctx context.Context, args []string) (txOutput, error) {
+	attempts := c.cfg.SeqRetryMax
+	if attempts < 1 {
+		attempts = 1
+	}
+
+	var lastOut []byte
+	for i := 0; i < attempts; i++ {
+		out, runErr := c.runner.Run(ctx, c.cfg.Binary, args...)
+		lastOut = out
+		tx, parseErr := parseTxOutput(out)
+
+		// Hard failure with no txhash (CLI exited non-zero, e.g. CheckTx reject).
+		if runErr != nil && tx.TxHash == "" {
+			if isSequenceMismatch(string(out)) && i < attempts-1 {
+				if !sleepCtx(ctx, c.cfg.SeqRetryDelay) {
+					return txOutput{}, ctx.Err()
+				}
+				continue
+			}
+			return txOutput{}, fmt.Errorf("%w: %s", runErr, strings.TrimSpace(string(out)))
+		}
+		if parseErr != nil {
+			return txOutput{}, parseErr
+		}
+		// A non-zero code carrying a sequence mismatch is also retryable.
+		if tx.Code != 0 && isSequenceMismatch(tx.RawLog) && i < attempts-1 {
+			if !sleepCtx(ctx, c.cfg.SeqRetryDelay) {
+				return txOutput{}, ctx.Err()
+			}
+			continue
+		}
+		return tx, nil
+	}
+	return txOutput{}, fmt.Errorf("broadcast exhausted %d retries: %s", attempts, strings.TrimSpace(string(lastOut)))
+}
+
+// waitForTxCommit polls `query tx <hash>` until the tx is found in a block or the
+// attempt budget is exhausted. A "not found" (tx still pending) surfaces as a
+// CLI error; we retry until it lands.
+func (c *CosmosClient) waitForTxCommit(ctx context.Context, txHash string) (txOutput, error) {
+	attempts := c.cfg.ConfirmAttempts
+	if attempts < 1 {
+		attempts = 1
+	}
+
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		out, err := c.runner.Run(ctx, c.cfg.Binary, c.queryTxArgs(txHash)...)
+		if err == nil {
+			if tx, parseErr := parseTxOutput(out); parseErr == nil {
+				return tx, nil // committed (code may be 0 or non-zero)
+			} else {
+				lastErr = parseErr
+			}
+		} else {
+			lastErr = fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+		}
+		if i < attempts-1 && !sleepCtx(ctx, c.cfg.ConfirmInterval) {
+			return txOutput{}, ctx.Err()
+		}
+	}
+	return txOutput{}, fmt.Errorf("tx %s not committed after %d polls: %v", txHash, attempts, lastErr)
+}
+
+// queryTxArgs builds `obd query tx <hash> --output json [--node ..] [--home ..]`.
+func (c *CosmosClient) queryTxArgs(txHash string) []string {
+	args := []string{"query", "tx", txHash, "--output", "json"}
+	if strings.TrimSpace(c.cfg.Node) != "" {
+		args = append(args, "--node", c.cfg.Node)
+	}
+	if strings.TrimSpace(c.cfg.Home) != "" {
+		args = append(args, "--home", c.cfg.Home)
+	}
+	return args
+}
+
+func isSequenceMismatch(s string) bool {
+	return strings.Contains(s, "account sequence mismatch")
+}
+
+// sleepCtx sleeps for d, returning false if the context is cancelled first.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 // commonTxArgs builds the shared obd tx flags for the given signer.
