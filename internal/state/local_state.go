@@ -24,6 +24,11 @@ type LocalState struct {
 	root              string
 	appliedDeposits   map[string]struct{}
 	appliedNullifiers map[string]struct{}
+	// reservations is the order-keyed reserved-collateral registry
+	// (STATE-T02), orderHash -> Reservation. Kept in lockstep with each
+	// account's reserved bucket so a reservation can be released/consumed for
+	// the exact order that created it.
+	reservations map[string]types.Reservation
 }
 
 // NewLocalState initializes an empty off-chain state.
@@ -37,6 +42,7 @@ func NewLocalState() *LocalState {
 		root:              ComputeRoot(accounts.Snapshot()),
 		appliedDeposits:   make(map[string]struct{}),
 		appliedNullifiers: make(map[string]struct{}),
+		reservations:      make(map[string]types.Reservation),
 	}
 }
 

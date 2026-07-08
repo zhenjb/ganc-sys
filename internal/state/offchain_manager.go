@@ -2,6 +2,7 @@ package state
 
 import (
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/zhenjb/ganc-sys/pkg/types"
@@ -147,6 +148,69 @@ func (m *OffchainStateManager) ApplyWithdrawRequest(req types.WithdrawRequest, n
 	return root, nil
 }
 
+// Reserve khoá `amount` collateral của (owner, denom) cho order `orderHash`
+// (STATE-T02): chuyển available -> reserved và ghi Reservation, rồi advance
+// pending root. Dùng cho luồng đặt order (buy khoá quote, sell khoá base — denom
+// do caller chọn qua ReserveDenomForSide). Idempotency theo orderHash: reserve
+// trùng orderHash trả ErrReservationExists; thiếu available trả
+// ErrInsufficientAvailable. Trên lỗi, state KHÔNG bị mutate.
+func (m *OffchainStateManager) Reserve(owner, denom, amount, orderHash string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	root, err := m.ls.Reserve(owner, denom, amount, orderHash)
+	if err != nil {
+		return "", err
+	}
+	m.gen++
+	return root, nil
+}
+
+// ReleaseOrder hoàn toàn bộ reserved còn lại của `orderHash` về available (huỷ /
+// hết hạn order) và xoá reservation, rồi advance root. orderHash không tồn tại
+// trả ErrReservationNotFound. Trên lỗi, state KHÔNG bị mutate.
+func (m *OffchainStateManager) ReleaseOrder(orderHash string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	root, err := m.ls.ReleaseOrder(orderHash)
+	if err != nil {
+		return "", err
+	}
+	m.gen++
+	return root, nil
+}
+
+// ConsumeOrder rút `amount` khỏi reserved của `orderHash` khi order fill
+// (hỗ trợ partial fill: phần còn lại vẫn reserved), rồi advance root. orderHash
+// không tồn tại trả ErrReservationNotFound; amount > phần còn lại trả
+// ErrInsufficientReserved. Trên lỗi, state KHÔNG bị mutate.
+func (m *OffchainStateManager) ConsumeOrder(orderHash, amount string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	root, err := m.ls.ConsumeOrder(orderHash, amount)
+	if err != nil {
+		return "", err
+	}
+	m.gen++
+	return root, nil
+}
+
+// Reservation trả về reservation sống của orderHash, nếu có. Read-only.
+func (m *OffchainStateManager) Reservation(orderHash string) (types.Reservation, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.ls.Reservation(orderHash)
+}
+
+// Reservations trả về mọi reservation sống, sort theo orderHash. Read-only.
+func (m *OffchainStateManager) Reservations() []types.Reservation {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.ls.Reservations()
+}
+
 // Snapshot trả về một bản chụp immutable của state hiện tại.
 //
 // Snapshot là deep-copy: mutate manager sau đó KHÔNG ảnh hưởng snapshot
@@ -181,6 +245,7 @@ func (m *OffchainStateManager) snapshotLocked() Snapshot {
 		accounts:          accCopy,
 		appliedDeposits:   copyStrSet(m.ls.appliedDeposits),
 		appliedNullifiers: copyStrSet(m.ls.appliedNullifiers),
+		reservations:      copyReservations(m.ls.reservations),
 		gen:               m.gen,
 	}
 }
@@ -275,6 +340,7 @@ type Snapshot struct {
 	accounts          map[accountKey]types.Account
 	appliedDeposits   map[string]struct{}
 	appliedNullifiers map[string]struct{}
+	reservations      map[string]types.Reservation
 	gen               uint64
 }
 
@@ -344,6 +410,21 @@ func (s Snapshot) IsNullifierApplied(nullifier string) bool {
 	return ok
 }
 
+// Reservation trả về reservation của orderHash trong snapshot này, nếu có.
+func (s Snapshot) Reservation(orderHash string) (types.Reservation, bool) {
+	if s.reservations == nil {
+		return types.Reservation{}, false
+	}
+	r, ok := s.reservations[strings.TrimSpace(orderHash)]
+	return r, ok
+}
+
+// Reservations trả về danh sách reservation đã sort theo orderHash. Bản copy
+// mới mỗi lần gọi.
+func (s Snapshot) Reservations() []types.Reservation {
+	return sortedReservations(s.reservations)
+}
+
 // NewLocalStateFromSnapshot construct LocalState seed từ một Snapshot.
 //
 // Phục vụ STATE-14 batch builder integration: thay vì
@@ -380,6 +461,7 @@ func newLocalStateFromSnapshotData(snap Snapshot) *LocalState {
 		root:              root,
 		appliedDeposits:   copyStrSet(snap.appliedDeposits),
 		appliedNullifiers: copyStrSet(snap.appliedNullifiers),
+		reservations:      copyReservations(snap.reservations),
 	}
 }
 
