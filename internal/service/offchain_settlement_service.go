@@ -301,9 +301,37 @@ func (s *OffchainSettlementService) BuildPendingBatch(
 		return appbatch.BuildOutput{}, err
 	}
 
-	deposits := make([]types.DepositRecord, 0, len(pendingDeposits))
-	depositIDs := make([]string, 0, len(pendingDeposits))
+	// The gazk settlement circuit v1 proves exactly ONE withdrawal per batch:
+	// a single per-account nonce binds the withdrawal nullifier
+	// (NullifierFor(secret, account.Nonce)). If a batch carried two
+	// withdrawals for the same account, the witness could only carry the last
+	// nonce, so the prover would reject every earlier withdrawal with a
+	// "nullifier mismatch". Bounding the batch to the ordered-chain prefix that
+	// ends at the FIRST withdrawal keeps every emitted batch within that limit;
+	// any remaining pending operations drain in subsequent sequencer passes.
+	// Deposit-only chains take the whole prefix. NewStateRoot must therefore be
+	// the prefix's final rootAfter — NOT cursor.PendingRoot, which reflects the
+	// full (possibly larger) pending set.
+	boundedTransitions := boundSingleWithdrawalPrefix(orderedTransitions)
+	newStateRoot := boundedTransitions[len(boundedTransitions)-1].rootAfter
+
+	selectedDeposits := make(map[string]bool)
+	selectedWithdrawals := make(map[string]bool)
+	for _, transition := range boundedTransitions {
+		switch transition.kind {
+		case "deposit":
+			selectedDeposits[transition.id] = true
+		case "withdrawal":
+			selectedWithdrawals[transition.id] = true
+		}
+	}
+
+	deposits := make([]types.DepositRecord, 0, len(selectedDeposits))
+	depositIDs := make([]string, 0, len(selectedDeposits))
 	for _, transition := range pendingDeposits {
+		if !selectedDeposits[transition.DepositID] {
+			continue
+		}
 		deposits = append(deposits, types.DepositRecord{
 			DepositID: transition.DepositID,
 			Owner:     transition.OwnerAddress,
@@ -314,9 +342,12 @@ func (s *OffchainSettlementService) BuildPendingBatch(
 		depositIDs = append(depositIDs, transition.DepositID)
 	}
 
-	withdrawals := make([]appbatch.WithdrawalInput, 0, len(pendingWithdrawals))
-	withdrawIDs := make([]string, 0, len(pendingWithdrawals))
+	withdrawals := make([]appbatch.WithdrawalInput, 0, len(selectedWithdrawals))
+	withdrawIDs := make([]string, 0, len(selectedWithdrawals))
 	for _, transition := range pendingWithdrawals {
+		if !selectedWithdrawals[transition.WithdrawID] {
+			continue
+		}
 		withdrawals = append(withdrawals, appbatch.WithdrawalInput{
 			Request: types.WithdrawRequest{
 				WithdrawID:  transition.WithdrawID,
@@ -335,7 +366,7 @@ func (s *OffchainSettlementService) BuildPendingBatch(
 
 	settlementInput := appbatch.SettlementInputs{
 		OldStateRoot: cursor.CommittedRoot,
-		NewStateRoot: cursor.PendingRoot,
+		NewStateRoot: newStateRoot,
 		Deposits:     deposits,
 		Withdrawals:  withdrawals,
 	}
@@ -346,7 +377,7 @@ func (s *OffchainSettlementService) BuildPendingBatch(
 	}
 
 	witnessAccounts, err := buildWitnessAccountsFromPendingTransitions(
-		orderedTransitions,
+		boundedTransitions,
 		accountSecrets,
 	)
 	if err != nil {
@@ -530,6 +561,23 @@ type pendingSettlementTransition struct {
 	rootAfter     string
 	balanceBefore string
 	balanceAfter  string
+}
+
+// boundSingleWithdrawalPrefix returns the longest prefix of an ordered
+// transition chain that contains at most ONE withdrawal — the prefix up to and
+// including the first withdrawal. A deposit-only chain returns unchanged. This
+// enforces the gazk settlement circuit v1 limit of one withdrawal per batch;
+// the caller settles the prefix now and drains the remainder in later passes.
+//
+// The input MUST be non-empty (BuildPendingBatch guarantees this by rejecting
+// empty pending sets before ordering).
+func boundSingleWithdrawalPrefix(ordered []pendingSettlementTransition) []pendingSettlementTransition {
+	for i, transition := range ordered {
+		if transition.kind == "withdrawal" {
+			return ordered[:i+1]
+		}
+	}
+	return ordered
 }
 
 func orderPendingSettlementTransitions(
