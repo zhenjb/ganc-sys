@@ -39,6 +39,13 @@ const chainDepositModeCosmos = "cosmos"
 const indexerModeMock = "mock"
 const indexerModeChain = "chain"
 
+// Order API mode selectors. "real" (default) wires the P3 order pipeline
+// (validate → reserve → insert) over the shared off-chain state manager;
+// "mock" keeps the INT-T01 static fixtures for pure-FE development. Config-only
+// switch — no code edits, same routes.
+const orderAPIModeReal = "real"
+const orderAPIModeMock = "mock"
+
 func main() {
 	port := getenv("PORT", "8080")
 
@@ -251,12 +258,15 @@ func main() {
 	chainQueryService := service.NewChainQueryService(chainQueryClient)
 	chainQueryHandler := handler.NewChainQueryHandler(chainQueryService)
 
-	// INT-T01 — order/orderbook API. Starts as a static mock so the frontend
-	// (P5) can build against a frozen contract from day one; INT-T02..T04 will
-	// replace NewMockOrderService with the real P3-backed OrderService behind the
-	// same routes.
-	orderService := service.NewMockOrderService()
+	// INT-T02 — order/orderbook API. Default "real" wires the P3 pipeline
+	// (validate → reserve → insert) over the shared off-chain state manager, so
+	// orders reserve from the same pending state deposits credit and batches
+	// snapshot. "mock" (INT-T01) keeps static fixtures for pure-FE dev. Same
+	// routes/shapes in both modes.
+	orderAPIMode := getenv("ORDER_API_MODE", orderAPIModeReal)
+	orderService := newOrderService(orderAPIMode, offchainStateManager)
 	orderHandler := handler.NewOrderHandler(orderService)
+	log.Printf("order api mode=%s", orderAPIMode)
 
 	router := api.NewRouter(api.RouterDeps{
 		HealthHandler:             healthHandler,
@@ -318,6 +328,27 @@ func main() {
 	if err := http.ListenAndServe(addr, handlerWithCORS); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// newOrderService selects the order/orderbook API implementation. "real" builds
+// the P3-backed service over the shared state manager; "mock" serves INT-T01
+// static fixtures. An unknown value falls back to "real". A real-service
+// construction failure (bad seeded market config) is fatal — the backend must
+// not start serving a half-wired order API.
+func newOrderService(mode string, offchainStateManager *appstate.OffchainStateManager) service.OrderService {
+	switch mode {
+	case orderAPIModeMock:
+		return service.NewMockOrderService()
+	case orderAPIModeReal:
+		// fallthrough to the real constructor below
+	default:
+		log.Printf("unknown ORDER_API_MODE=%q, falling back to real", mode)
+	}
+	svc, err := service.NewRealOrderService(offchainStateManager, service.DefaultMarkets(), nil)
+	if err != nil {
+		log.Fatalf("order service (real): %v", err)
+	}
+	return svc
 }
 
 func newBatchBuilder(

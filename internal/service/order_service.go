@@ -5,8 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
+	"time"
 
+	"github.com/zhenjb/ganc-sys/internal/state"
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
 
@@ -35,22 +38,38 @@ var (
 	ErrMarketNotFound = errors.New("order service: market not found")
 )
 
-// MockOrderService is the INT-T01 static implementation. It serves a fixed
-// market registry and orderbook fixture, and echoes any posted order back as
-// "open". It performs NO signature/reserve/matching logic — those arrive with
-// INT-T02..T05. The order id is derived from the canonical order bytes so it is
-// deterministic and forward-compatible with the real orderHash (SHA-256 of
-// CanonicalBytes, same definition as STATE-T03 OrderHash), but this service
-// deliberately does not import P3 state (INT-T01 has no P3 dependency).
-type MockOrderService struct {
-	markets    []types.Market
-	orderbooks map[string]types.OrderbookSnapshot
+// Machine-readable order rejection codes returned to P5 in the 400 body's
+// "reason" field. bad_format/bad_signature/tick_violation/... are passed through
+// verbatim from STATE-T03; these two are the P4-level codes the plan names.
+const (
+	// ReasonInsufficientBalance — available balance can't cover the collateral
+	// (maps STATE-T03 ReasonInsufficientAvailable). Plan's required 400 code.
+	ReasonInsufficientBalance = "insufficient_balance"
+	// ReasonDuplicateOrder — an order with this hash is already resting.
+	ReasonDuplicateOrder = "duplicate_order"
+)
+
+// OrderRejectedError is a client-input rejection (HTTP 400) carrying a stable
+// machine reason code plus a human detail. The handler renders it as
+// {"error": detail, "reason": code}. Distinct from a nil-verdict/internal error
+// (HTTP 500) so validation failures never leak as 500s.
+type OrderRejectedError struct {
+	Reason string
+	Detail string
 }
 
-// NewMockOrderService builds the mock with a frozen ATOM/USDC + OSMO/USDC
-// fixture. The shapes here are the contract handed to P5; keep them stable.
-func NewMockOrderService() *MockOrderService {
-	markets := []types.Market{
+func (e *OrderRejectedError) Error() string {
+	if e.Detail != "" {
+		return e.Reason + ": " + e.Detail
+	}
+	return e.Reason
+}
+
+// DefaultMarkets is the MVP off-chain market registry seed, shared by the mock
+// (INT-T01) and the real (INT-T02) order service so the market contract handed
+// to P5 is identical in both modes. Keep in sync with the orderbook fixtures.
+func DefaultMarkets() []types.Market {
+	return []types.Market{
 		{
 			Market:      "ATOM/USDC",
 			BaseDenom:   "uatom",
@@ -72,6 +91,24 @@ func NewMockOrderService() *MockOrderService {
 			Status:      types.MarketActive,
 		},
 	}
+}
+
+// MockOrderService is the INT-T01 static implementation. It serves a fixed
+// market registry and orderbook fixture, and echoes any posted order back as
+// "open". It performs NO signature/reserve/matching logic — those arrive with
+// INT-T02..T05. The order id is derived from the canonical order bytes so it is
+// deterministic and forward-compatible with the real orderHash (SHA-256 of
+// CanonicalBytes, same definition as STATE-T03 OrderHash), but this service
+// deliberately does not import P3 state (INT-T01 has no P3 dependency).
+type MockOrderService struct {
+	markets    []types.Market
+	orderbooks map[string]types.OrderbookSnapshot
+}
+
+// NewMockOrderService builds the mock with a frozen ATOM/USDC + OSMO/USDC
+// fixture. The shapes here are the contract handed to P5; keep them stable.
+func NewMockOrderService() *MockOrderService {
+	markets := DefaultMarkets()
 
 	orderbooks := map[string]types.OrderbookSnapshot{
 		"ATOM/USDC": {
@@ -123,13 +160,12 @@ func (s *MockOrderService) CreateOrder(_ context.Context, order types.SignedOrde
 	}
 
 	orderHash := mockOrderHash(order)
-	orderID := "ord-" + orderHash[2:18] // "0x" + first 16 hex chars
 
 	return types.OrderResponse{
 		Order:  order,
 		Status: types.OrderStatusOpen,
 		State: types.OrderState{
-			OrderID:   orderID,
+			OrderID:   orderIDFromHash(orderHash),
 			OrderHash: orderHash,
 			Status:    types.OrderStatusOpen,
 			Remaining: order.Qty,
@@ -144,6 +180,154 @@ func (s *MockOrderService) GetOrderbook(_ context.Context, market string) (types
 		return types.OrderbookSnapshot{}, ErrMarketNotFound
 	}
 	return book, nil
+}
+
+// ---------------------------------------------------------------------------
+// RealOrderService (INT-T02) — the real endpoint. It is pure GLUE over P3: it
+// orchestrates STATE-T03 validate → STATE-T04 insert (which fuses STATE-T02
+// reserve) and maps failures to HTTP codes. It implements NO trading logic of
+// its own. Same OrderService interface as the mock, so main.go swaps it in
+// behind the same routes with no handler/route/DTO change.
+// ---------------------------------------------------------------------------
+
+// RealOrderService wires the P3 order pipeline behind the order API. It holds
+// the shared OffchainStateManager (deposits credit it, batches snapshot it) as
+// both the balance source and the reservation controller, so an order reserves
+// from the very state the rest of the backend settles.
+type RealOrderService struct {
+	markets    *state.MarketRegistry
+	validator  *state.OrderValidator
+	books      *state.BookSet
+	manager    *state.OffchainStateManager
+	nullifiers *state.InMemoryOrderNullifiers
+	now        func() int64
+}
+
+// compile-time assertion that the real service satisfies the boundary.
+var _ OrderService = (*RealOrderService)(nil)
+
+// NewRealOrderService builds the real order service over a shared state manager.
+// markets seeds the off-chain registry (use DefaultMarkets for parity with the
+// mock). now supplies the validation reference time in unix seconds; nil uses
+// the wall clock (this is the live submission boundary, not the deterministic
+// replay path — P2 replays from recorded order data, not this clock). Returns an
+// error if any market config is invalid.
+func NewRealOrderService(manager *state.OffchainStateManager, markets []types.Market, now func() int64) (*RealOrderService, error) {
+	if manager == nil {
+		return nil, errors.New("order service: nil state manager")
+	}
+	registry := state.NewMarketRegistry()
+	for _, m := range markets {
+		if err := registry.Register(m); err != nil {
+			return nil, fmt.Errorf("order service: seed market %q: %w", m.Market, err)
+		}
+	}
+	nullifiers := state.NewInMemoryOrderNullifiers()
+	// The BookSet shares the manager (reserve on insert / release on cancel) and
+	// the nullifier marker across every market's book.
+	books := state.NewBookSet(manager, nullifiers)
+	validator := state.NewOrderValidator(registry, manager, nullifiers, nil)
+	if now == nil {
+		now = func() int64 { return time.Now().Unix() }
+	}
+	return &RealOrderService{
+		markets:    registry,
+		validator:  validator,
+		books:      books,
+		manager:    manager,
+		nullifiers: nullifiers,
+		now:        now,
+	}, nil
+}
+
+func (s *RealOrderService) ListMarkets(_ context.Context) types.MarketsResponse {
+	return types.MarketsResponse{Markets: s.markets.List()}
+}
+
+// CreateOrder runs validate → insert(=reserve+rest) atomically from the caller's
+// view. Validation rejections and an insufficient/duplicate insert become an
+// *OrderRejectedError (HTTP 400); a genuine internal fault becomes a plain error
+// (HTTP 500). On the (currently impossible) path where collateral was reserved
+// but resting failed, it compensates by releasing the reservation so no balance
+// is orphaned — honoring the plan's atomicity requirement and future-proofing
+// against a non-atomic Insert.
+func (s *RealOrderService) CreateOrder(_ context.Context, order types.SignedOrder) (types.OrderResponse, error) {
+	verdict, err := s.validator.Validate(order, s.now())
+	if err != nil {
+		return types.OrderResponse{}, fmt.Errorf("order service: validate: %w", err)
+	}
+	if !verdict.Accepted {
+		return types.OrderResponse{}, rejectionFromVerdict(verdict)
+	}
+
+	book := s.books.Book(order.Market)
+	resting, err := book.Insert(order, verdict)
+	if err != nil {
+		// Compensating release: return collateral if it was reserved but the order
+		// did not come to rest (defensive — Insert is atomic today).
+		if _, reserved := s.manager.Reservation(verdict.OrderHash); reserved {
+			_, _ = s.manager.ReleaseOrder(verdict.OrderHash)
+		}
+		switch {
+		case errors.Is(err, state.ErrInsufficientAvailable):
+			return types.OrderResponse{}, &OrderRejectedError{Reason: ReasonInsufficientBalance, Detail: err.Error()}
+		case errors.Is(err, state.ErrOrderExists), errors.Is(err, state.ErrReservationExists):
+			return types.OrderResponse{}, &OrderRejectedError{Reason: ReasonDuplicateOrder, Detail: err.Error()}
+		default:
+			return types.OrderResponse{}, fmt.Errorf("order service: insert: %w", err)
+		}
+	}
+
+	return types.OrderResponse{
+		Order:  order,
+		Status: types.OrderStatusOpen,
+		State: types.OrderState{
+			OrderID:   orderIDFromHash(verdict.OrderHash),
+			OrderHash: verdict.OrderHash,
+			Status:    types.OrderStatusOpen,
+			Remaining: resting.Remaining,
+			Filled:    "0",
+		},
+	}, nil
+	// INT-T05 hook: after a successful insert, trigger the matching engine for
+	// order.Market here to produce fills. Left out until INT-T05.
+}
+
+func (s *RealOrderService) GetOrderbook(_ context.Context, market string) (types.OrderbookSnapshot, error) {
+	if _, ok := s.markets.Get(market); !ok {
+		return types.OrderbookSnapshot{}, ErrMarketNotFound
+	}
+	bids, asks, bestBid, bestAsk := s.books.Book(market).Depth()
+	return types.OrderbookSnapshot{
+		Market:  market,
+		Bids:    bids,
+		Asks:    asks,
+		BestBid: bestBid,
+		BestAsk: bestAsk,
+	}, nil
+}
+
+// rejectionFromVerdict maps a STATE-T03 reject verdict to an *OrderRejectedError.
+// The insufficient-available reason is renamed to the plan's "insufficient_balance"
+// code; every other reason (bad_format/bad_signature/tick_violation/…) passes
+// through verbatim so P5 can branch on it.
+func rejectionFromVerdict(v state.OrderValidation) *OrderRejectedError {
+	reason := string(v.Reason)
+	if v.Reason == state.ReasonInsufficientAvailable {
+		reason = ReasonInsufficientBalance
+	}
+	return &OrderRejectedError{Reason: reason, Detail: v.Detail}
+}
+
+// orderIDFromHash derives the API order id from the orderHash ("0x"+64 hex):
+// "ord-" + the first 16 hex chars. Deterministic and identical to the mock's id
+// scheme, so ids are stable across the mock→real swap.
+func orderIDFromHash(orderHash string) string {
+	h := strings.TrimPrefix(orderHash, "0x")
+	if len(h) > 16 {
+		h = h[:16]
+	}
+	return "ord-" + h
 }
 
 // mockOrderHash returns "0x"+hex(SHA-256(CanonicalBytes)). It matches the

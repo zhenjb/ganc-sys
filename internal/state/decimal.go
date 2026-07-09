@@ -176,6 +176,18 @@ func isZeroDecimal(d decimal) bool {
 	return d.mant.Sign() == 0
 }
 
+// addDecimal returns the exact a+b (both non-negative). Used to aggregate resting
+// remaining quantities into an orderbook depth level (STATE-T04 Depth / INT-T02).
+func addDecimal(a, b decimal) decimal {
+	common := a.scale
+	if b.scale > common {
+		common = b.scale
+	}
+	am := new(big.Int).Mul(a.mant, pow10(common-a.scale))
+	bm := new(big.Int).Mul(b.mant, pow10(common-b.scale))
+	return decimal{mant: new(big.Int).Add(am, bm), scale: common}
+}
+
 // subDecimal returns the exact a-b. Callers must ensure a >= b (the orderbook
 // guards fill <= remaining before subtracting) so the result is non-negative.
 func subDecimal(a, b decimal) decimal {

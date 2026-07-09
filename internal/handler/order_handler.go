@@ -46,6 +46,16 @@ func (h *OrderHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.orderService.CreateOrder(r.Context(), order)
 	if err != nil {
+		// Client-input rejection (bad sig / insufficient balance / tick-lot / …):
+		// 400 with a stable machine reason code so P5 can branch on it.
+		var rejected *service.OrderRejectedError
+		if errors.As(err, &rejected) {
+			response.JSON(w, http.StatusBadRequest, map[string]any{
+				"error":  rejected.Detail,
+				"reason": rejected.Reason,
+			})
+			return
+		}
 		if errors.Is(err, service.ErrOrderFieldsRequired) {
 			response.Error(w, http.StatusBadRequest, err.Error())
 			return

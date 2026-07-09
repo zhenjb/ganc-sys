@@ -3,6 +3,7 @@ package state
 import (
 	"errors"
 	"fmt"
+	"math/big"
 	"sort"
 	"strings"
 	"sync"
@@ -178,6 +179,38 @@ func (s *bookSide) ordered() []RestingOrder {
 			for _, o := range s.levels[k].orders {
 				out = append(out, o.view)
 			}
+		}
+	}
+	return out
+}
+
+// depthLevels aggregates this side into price levels in priority order (best
+// first): one level per distinct price, Qty = sum of the resting orders'
+// Remaining at that price. Empty levels are skipped. Used by GET /api/orderbook
+// (INT-T02/INT-T04) to render depth without exposing individual orders.
+func (s *bookSide) depthLevels() []types.PriceLevel {
+	out := make([]types.PriceLevel, 0, len(s.sortedKeys))
+	emit := func(level *priceLevel) {
+		sum := decimal{mant: new(big.Int), scale: 0}
+		for _, o := range level.orders {
+			rem, err := parsePositiveDecimal(o.view.Remaining)
+			if err != nil {
+				continue // a resting order always has a positive remaining; skip defensively
+			}
+			sum = addDecimal(sum, rem)
+		}
+		if isZeroDecimal(sum) {
+			return
+		}
+		out = append(out, types.PriceLevel{Price: level.price.String(), Qty: sum.String()})
+	}
+	if s.side == types.SideBuy {
+		for i := len(s.sortedKeys) - 1; i >= 0; i-- { // highest price first
+			emit(s.levels[s.sortedKeys[i]])
+		}
+	} else {
+		for _, k := range s.sortedKeys { // lowest price first
+			emit(s.levels[k])
 		}
 	}
 	return out
@@ -380,6 +413,25 @@ func (b *Orderbook) Snapshot() BookSnapshot {
 		Bids:   b.bids.ordered(),
 		Asks:   b.asks.ordered(),
 	}
+}
+
+// Depth returns the aggregated price-level view of the book in priority order
+// (bids highest-first, asks lowest-first), with bestBid/bestAsk the top-of-book
+// prices ("" when a side is empty). bids/asks are always non-nil (possibly
+// empty) so they JSON-encode as [] not null. This is the read model behind
+// GET /api/orderbook/{market} (INT-T02).
+func (b *Orderbook) Depth() (bids, asks []types.PriceLevel, bestBid, bestAsk string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	bids = b.bids.depthLevels()
+	asks = b.asks.depthLevels()
+	if len(bids) > 0 {
+		bestBid = bids[0].Price
+	}
+	if len(asks) > 0 {
+		bestAsk = asks[0].Price
+	}
+	return bids, asks, bestBid, bestAsk
 }
 
 // OrderbookSnapshot is a deep, restorable snapshot of a book's internal state
