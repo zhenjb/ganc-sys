@@ -139,6 +139,25 @@ func (d decimal) ceilToInt() *big.Int {
 	return q
 }
 
+// toIntExact returns the decimal's integer value and true when it is a whole
+// number (no fractional remainder), else (nil, false). Settlement amounts
+// (notional, base qty) must be whole smallest-units to transfer exactly; a
+// fractional value signals a fixed-point/scaling mismatch and is rejected rather
+// than silently rounded (which would break value conservation).
+func (d decimal) toIntExact() (*big.Int, bool) {
+	if d.scale == 0 {
+		return new(big.Int).Set(d.mant), true
+	}
+	div := pow10(d.scale)
+	q := new(big.Int)
+	r := new(big.Int)
+	q.DivMod(d.mant, div, r)
+	if r.Sign() != 0 {
+		return nil, false
+	}
+	return q, true
+}
+
 // ceilDivBig returns ceil(a / b) for a >= 0, b > 0.
 func ceilDivBig(a, b *big.Int) *big.Int {
 	num := new(big.Int).Add(a, new(big.Int).Sub(b, big.NewInt(1)))

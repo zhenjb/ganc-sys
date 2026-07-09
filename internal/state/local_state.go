@@ -103,6 +103,22 @@ func (s *LocalState) ApplyDeposit(d types.DepositRecord) (string, error) {
 	return s.root, nil
 }
 
+// CreditAvailable adds amount to an account's available (spendable) balance and
+// advances the pending root. Unlike ApplyDeposit it carries no idempotency key —
+// it is the raw settlement credit used by STATE-T06 trade apply to pay a
+// counterparty (base to the buyer, quote to the seller) and to fund the fee
+// account. amount must be a positive integer string.
+func (s *LocalState) CreditAvailable(owner, denom, amount string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, err := s.accounts.Credit(owner, denom, amount); err != nil {
+		return "", err
+	}
+	s.root = ComputeRoot(s.accounts.Snapshot())
+	return s.root, nil
+}
+
 func (s *LocalState) IsDepositApplied(depositID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

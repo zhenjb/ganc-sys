@@ -197,6 +197,22 @@ func (m *OffchainStateManager) ConsumeOrder(orderHash, amount string) (string, e
 	return root, nil
 }
 
+// CreditAvailable cộng amount vào available balance của (owner, denom) và advance
+// root — settlement credit thô cho STATE-T06 (trả base cho buyer, quote cho
+// seller, nạp feeAccount). amount phải là số nguyên dương. Trên lỗi, state KHÔNG
+// bị mutate.
+func (m *OffchainStateManager) CreditAvailable(owner, denom, amount string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	root, err := m.ls.CreditAvailable(owner, denom, amount)
+	if err != nil {
+		return "", err
+	}
+	m.gen++
+	return root, nil
+}
+
 // Reservation trả về reservation sống của orderHash, nếu có. Read-only.
 func (m *OffchainStateManager) Reservation(orderHash string) (types.Reservation, bool) {
 	m.mu.Lock()
