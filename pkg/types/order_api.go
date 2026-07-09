@@ -100,3 +100,13 @@ type OpenOrdersResponse struct {
 type TradesResponse struct {
 	Fills []Fill `json:"fills"`
 }
+
+// ReservedBalance is one account's available vs reserved split for a denom, used
+// by the GET /api/state trading extension (INT-T07). available == Account.Balance,
+// reserved is the collateral locked behind resting orders (STATE-T02).
+type ReservedBalance struct {
+	Owner     string `json:"owner"`
+	Denom     string `json:"denom"`
+	Available string `json:"available"`
+	Reserved  string `json:"reserved"`
+}

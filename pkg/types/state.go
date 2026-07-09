@@ -17,6 +17,13 @@ type AppState struct {
 	DepositStatus  string `json:"depositStatus"`
 	WithdrawStatus string `json:"withdrawStatus"`
 	BatchStatus    string `json:"batchStatus"`
+
+	// --- INT-T07 trading extension (APPEND-ONLY; omitempty keeps the
+	// deposit/withdraw dashboard response byte-identical when unset). ---
+	ReservedBalances []ReservedBalance       `json:"reservedBalances,omitempty"`
+	OpenOrders       []OpenOrder             `json:"openOrders,omitempty"`
+	LatestTrades     []Fill                  `json:"latestTrades,omitempty"`
+	MarketStatus     map[string]MarketStatus `json:"marketStatus,omitempty"`
 }
 
 type PartialState struct {

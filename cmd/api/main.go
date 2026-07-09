@@ -268,6 +268,14 @@ func main() {
 	orderHandler := handler.NewOrderHandler(orderService)
 	log.Printf("order api mode=%s", orderAPIMode)
 
+	// INT-T07 — extend GET /api/state with the trading slice (reservedBalances,
+	// openOrders, latestTrades, marketStatus), sourced from the same real order
+	// service so the dashboard never drifts from the order/orderbook endpoints.
+	if realOrderService, ok := orderService.(*service.RealOrderService); ok {
+		stateHandler.SetTradeStateProvider(realOrderService)
+		log.Printf("state trading extension wired (GET /api/state ext)")
+	}
+
 	// INT-T05 — matching trigger. POST /api/order already matches synchronously on
 	// insert; this interval sequencer is the backstop that periodically sweeps all
 	// markets for crossings missed by an event. It shares the order service's

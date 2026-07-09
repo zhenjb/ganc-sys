@@ -17,6 +17,9 @@ type TradeStore interface {
 	Record(fills []types.Fill)
 	// ByMarket returns a copy of a market's fills in insertion order.
 	ByMarket(market string) []types.Fill
+	// Recent returns the most recent fills across ALL markets (insertion order,
+	// oldest→newest), at most limit of them. Used by GET /api/state latestTrades.
+	Recent(limit int) []types.Fill
 }
 
 // InMemoryTradeStore is the MVP in-memory fill history, keyed by market and
@@ -25,6 +28,7 @@ type TradeStore interface {
 type InMemoryTradeStore struct {
 	mu       sync.RWMutex
 	byMarket map[string][]types.Fill
+	all      []types.Fill // global insertion-order log (for Recent across markets)
 }
 
 // NewInMemoryTradeStore returns an empty fill history.
@@ -48,7 +52,26 @@ func (s *InMemoryTradeStore) Record(fills []types.Fill) {
 			continue
 		}
 		s.byMarket[m] = append(s.byMarket[m], f)
+		s.all = append(s.all, f)
 	}
+}
+
+// Recent returns a copy of the last `limit` fills across all markets (oldest →
+// newest). limit <= 0 returns an empty slice.
+func (s *InMemoryTradeStore) Recent(limit int) []types.Fill {
+	if limit <= 0 {
+		return []types.Fill{}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	start := len(s.all) - limit
+	if start < 0 {
+		start = 0
+	}
+	tail := s.all[start:]
+	out := make([]types.Fill, len(tail))
+	copy(out, tail)
+	return out
 }
 
 // ByMarket returns a copy of the market's fills (insertion order) so a caller
