@@ -268,6 +268,36 @@ func main() {
 	orderHandler := handler.NewOrderHandler(orderService)
 	log.Printf("order api mode=%s", orderAPIMode)
 
+	// INT-T05 — matching trigger. POST /api/order already matches synchronously on
+	// insert; this interval sequencer is the backstop that periodically sweeps all
+	// markets for crossings missed by an event. It shares the order service's
+	// single-writer matchMu, so it never races an insert-time match. Only the real
+	// service has books to match; the mock has none.
+	if realOrderService, ok := orderService.(*service.RealOrderService); ok &&
+		getenv("MATCHING_WORKER_ENABLED", "true") == "true" {
+		interval := parseDurationOr(getenv("MATCHING_INTERVAL", "2s"), 2*time.Second)
+		matchingSequencer := sequencer.NewMatchingSequencer(realOrderService, interval)
+		go matchingSequencer.Run(context.Background())
+		log.Printf("matching sequencer started (in-process): interval=%s", interval)
+	} else {
+		log.Printf("matching sequencer disabled (mode=%s, MATCHING_WORKER_ENABLED)", orderAPIMode)
+	}
+
+	// INT-T06 — trade batch pipeline. Drains matched fills (INT-T05) and settles
+	// them on-chain: apply → build(trades[]) → prove(stub Wave 1) → submit. Shares
+	// the order service's single-writer lock with matching and self-heals on a
+	// transient failure (rollback + re-enqueue). Wave 2 swaps the stub prover/
+	// submitter for A's gazk trade prover + the real relayer via SetTradeSettlement.
+	if realOrderService, ok := orderService.(*service.RealOrderService); ok &&
+		getenv("TRADE_SETTLEMENT_WORKER_ENABLED", "true") == "true" {
+		interval := parseDurationOr(getenv("TRADE_SETTLEMENT_INTERVAL", "4s"), 4*time.Second)
+		tradeSettlementSequencer := sequencer.NewTradeSettlementSequencer(realOrderService, interval)
+		go tradeSettlementSequencer.Run(context.Background())
+		log.Printf("trade settlement sequencer started (in-process): interval=%s", interval)
+	} else {
+		log.Printf("trade settlement sequencer disabled (mode=%s, TRADE_SETTLEMENT_WORKER_ENABLED)", orderAPIMode)
+	}
+
 	router := api.NewRouter(api.RouterDeps{
 		HealthHandler:             healthHandler,
 		StateHandler:              stateHandler,

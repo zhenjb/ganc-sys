@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/zhenjb/ganc-sys/internal/batch"
 	"github.com/zhenjb/ganc-sys/internal/state"
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
@@ -285,7 +287,23 @@ type RealOrderService struct {
 	manager    *state.OffchainStateManager
 	nullifiers *state.InMemoryOrderNullifiers
 	trades     TradeStore
-	now        func() int64
+	engine     *state.MatchingEngine
+	queue      FillQueue
+	builder    *batch.SettlementUpdateBuilder
+	// orderRecords retains each placed order's data keyed by orderHash so trade
+	// settlement (INT-T06) can rebuild its OrderCommitmentInput / witness after
+	// matching has removed filled orders from the book. Accessed under matchMu.
+	orderRecords   map[string]orderRecord
+	tradeProver    TradeProver
+	tradeSubmitter TradeSubmitter
+	matchMu        sync.Mutex // single-writer: serializes matching + settle (INT-T05/T06)
+	now            func() int64
+}
+
+// orderRecord is the retained data for one placed order (INT-T06 settlement).
+type orderRecord struct {
+	order    types.SignedOrder
+	sequence uint64
 }
 
 // compile-time assertion that the real service satisfies the boundary.
@@ -316,22 +334,102 @@ func NewRealOrderService(manager *state.OffchainStateManager, markets []types.Ma
 		now = func() int64 { return time.Now().Unix() }
 	}
 	return &RealOrderService{
-		markets:    registry,
-		validator:  validator,
-		books:      books,
-		manager:    manager,
-		nullifiers: nullifiers,
-		trades:     NewInMemoryTradeStore(),
-		now:        now,
+		markets:        registry,
+		validator:      validator,
+		books:          books,
+		manager:        manager,
+		nullifiers:     nullifiers,
+		trades:         NewInMemoryTradeStore(),
+		engine:         state.NewMatchingEngine(),
+		queue:          NewInMemoryFillQueue(),
+		builder:        batch.NewSettlementUpdateBuilder(),
+		orderRecords:   make(map[string]orderRecord),
+		tradeProver:    NewLocalTradeProver(),
+		tradeSubmitter: NewLocalTradeSubmitter(),
+		now:            now,
 	}, nil
 }
 
-// RecordFills appends matching-engine fills to the trade history so they surface
-// in GET /api/trades. This is the INT-T05 (matching trigger) write seam: after
-// STATE-T05 Match produces fills, the trigger calls RecordFills. Exposed now so
-// INT-T04 has a populated read path and the two tasks integrate cleanly.
+// SetTradeSettlement swaps the trade prove/submit backends (Wave 2: A's gazk
+// trade prover + the real relayer trade submit, INT-T08). Call before starting
+// the settlement sequencer.
+func (s *RealOrderService) SetTradeSettlement(prover TradeProver, submitter TradeSubmitter) {
+	s.matchMu.Lock()
+	defer s.matchMu.Unlock()
+	if prover != nil {
+		s.tradeProver = prover
+	}
+	if submitter != nil {
+		s.tradeSubmitter = submitter
+	}
+}
+
+// RecordFills appends fills to the permanent trade history (GET /api/trades)
+// WITHOUT enqueuing them for settlement. Kept for tests/tooling that want to
+// seed history; the live matching path uses matchAndCollectLocked, which records
+// AND enqueues.
 func (s *RealOrderService) RecordFills(fills []types.Fill) {
 	s.trades.Record(fills)
+}
+
+// RunMatchingOnce matches every market once under the single-writer lock — the
+// interval sequencer's tick (INT-T05). Returns the total fills produced. Markets
+// are iterated in registry (sorted) order for determinism.
+func (s *RealOrderService) RunMatchingOnce() (int, error) {
+	s.matchMu.Lock()
+	defer s.matchMu.Unlock()
+	total := 0
+	for _, m := range s.markets.List() {
+		fills, err := s.matchAndCollectLocked(m)
+		if err != nil {
+			return total, fmt.Errorf("order service: match %s: %w", m.Market, err)
+		}
+		total += len(fills)
+	}
+	return total, nil
+}
+
+// DrainFills removes and returns all fills queued for settlement — the INT-T06
+// trade batch pipeline read seam.
+func (s *RealOrderService) DrainFills() []types.Fill { return s.queue.Drain() }
+
+// PendingFillCount reports how many fills await settlement (observability/tests).
+func (s *RealOrderService) PendingFillCount() int { return s.queue.Len() }
+
+// matchAndCollectLocked runs the matching engine for one market and routes its
+// fills into BOTH the permanent history (GET /api/trades) and the settlement
+// queue (INT-T06). It MUST be called with matchMu held (single-writer
+// determinism — the ZK proof must reproduce the exact fill sequence). It does
+// NOT touch balances: reserved collateral of filled orders stays locked until
+// on-chain settle (STATE-T06); matching only mutates the book via Reduce.
+func (s *RealOrderService) matchAndCollectLocked(market types.Market) ([]types.Fill, error) {
+	book := s.books.Book(market.Market)
+	fills, err := s.engine.Match(book, market)
+	if err != nil {
+		return nil, err
+	}
+	if len(fills) > 0 {
+		s.trades.Record(fills) // permanent history
+		s.queue.Enqueue(fills) // settlement work-list (INT-T06)
+	}
+	return fills, nil
+}
+
+// orderStatusLocked reports an order's post-match fill state (called with matchMu
+// held). A hash no longer in any book means it fully filled and was removed.
+func (s *RealOrderService) orderStatusLocked(book *state.Orderbook, orderHash, qty string) (remaining, filled string, status types.OrderStatus) {
+	rem, err := book.RemainingQty(orderHash)
+	if err != nil {
+		return "0", qty, types.OrderStatusFilled // gone from book => fully filled
+	}
+	f, serr := state.SubAmount(qty, rem)
+	if serr != nil {
+		f = "0" // defensive: book amounts are always valid decimals
+	}
+	if f == "0" {
+		return rem, "0", types.OrderStatusOpen
+	}
+	return rem, f, types.OrderStatusPartial
 }
 
 func (s *RealOrderService) ListMarkets(_ context.Context) types.MarketsResponse {
@@ -353,7 +451,14 @@ func (s *RealOrderService) CreateOrder(_ context.Context, order types.SignedOrde
 	if !verdict.Accepted {
 		return types.OrderResponse{}, rejectionFromVerdict(verdict)
 	}
+	// Validation already confirmed the market exists and is active.
+	market, _ := s.markets.Get(order.Market)
 
+	// Single-writer section (INT-T05): insert (reserve+rest) THEN immediately run
+	// matching, so the new order crosses at most once and the fill sequence is
+	// produced deterministically. The interval sequencer shares matchMu, so an
+	// insert-time match and a tick match never interleave.
+	s.matchMu.Lock()
 	book := s.books.Book(order.Market)
 	resting, err := book.Insert(order, verdict)
 	if err != nil {
@@ -362,6 +467,7 @@ func (s *RealOrderService) CreateOrder(_ context.Context, order types.SignedOrde
 		if _, reserved := s.manager.Reservation(verdict.OrderHash); reserved {
 			_, _ = s.manager.ReleaseOrder(verdict.OrderHash)
 		}
+		s.matchMu.Unlock()
 		switch {
 		case errors.Is(err, state.ErrInsufficientAvailable):
 			return types.OrderResponse{}, &OrderRejectedError{Reason: ReasonInsufficientBalance, Detail: err.Error()}
@@ -371,20 +477,29 @@ func (s *RealOrderService) CreateOrder(_ context.Context, order types.SignedOrde
 			return types.OrderResponse{}, fmt.Errorf("order service: insert: %w", err)
 		}
 	}
+	// Retain the order for settlement (INT-T06): after matching removes a filled
+	// order from the book, its data is only available here.
+	s.orderRecords[verdict.OrderHash] = orderRecord{order: order, sequence: resting.Sequence}
+
+	if _, err := s.matchAndCollectLocked(market); err != nil {
+		s.matchMu.Unlock()
+		return types.OrderResponse{}, fmt.Errorf("order service: match: %w", err)
+	}
+	// Reflect any immediate fill in the response (open / partial / filled).
+	remaining, filled, status := s.orderStatusLocked(book, verdict.OrderHash, order.Qty)
+	s.matchMu.Unlock()
 
 	return types.OrderResponse{
 		Order:  order,
-		Status: types.OrderStatusOpen,
+		Status: status,
 		State: types.OrderState{
 			OrderID:   orderIDFromHash(verdict.OrderHash),
 			OrderHash: verdict.OrderHash,
-			Status:    types.OrderStatusOpen,
-			Remaining: resting.Remaining,
-			Filled:    "0",
+			Status:    status,
+			Remaining: remaining,
+			Filled:    filled,
 		},
 	}, nil
-	// INT-T05 hook: after a successful insert, trigger the matching engine for
-	// order.Market here to produce fills. Left out until INT-T05.
 }
 
 func (s *RealOrderService) GetOrderbook(_ context.Context, market string) (types.OrderbookSnapshot, error) {
