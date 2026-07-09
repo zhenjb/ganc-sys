@@ -382,6 +382,63 @@ func (b *Orderbook) Snapshot() BookSnapshot {
 	}
 }
 
+// OrderbookSnapshot is a deep, restorable snapshot of a book's internal state
+// (STATE-T10). Unlike BookSnapshot (a read-only display view), this captures the
+// exact resting set + sequence counter so the book can be rolled back to it.
+type OrderbookSnapshot struct {
+	market string
+	seq    uint64
+	orders []RestingOrder // deep value copies, sorted by Sequence
+}
+
+// Market returns the snapshot's market id.
+func (s OrderbookSnapshot) Market() string { return s.market }
+
+// Len returns the number of resting orders in the snapshot.
+func (s OrderbookSnapshot) Len() int { return len(s.orders) }
+
+// Capture takes a deep snapshot of the book (STATE-T10 baseline). RestingOrder
+// is a pure value type, so the copied slice is independent of subsequent book
+// mutations (Reduce/Cancel).
+func (b *Orderbook) Capture() OrderbookSnapshot {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	orders := make([]RestingOrder, 0, len(b.bids.index)+len(b.asks.index))
+	for _, ro := range b.bids.index {
+		orders = append(orders, ro.view)
+	}
+	for _, ro := range b.asks.index {
+		orders = append(orders, ro.view)
+	}
+	sort.Slice(orders, func(i, j int) bool { return orders[i].Sequence < orders[j].Sequence })
+	return OrderbookSnapshot{market: b.market, seq: b.seq, orders: orders}
+}
+
+// Restore replaces the book's resting set + sequence with the snapshot,
+// rebuilding price-time priority. It does NOT touch the reservation controller
+// (collateral is restored separately by the manager rollback) — re-inserting
+// here must not re-reserve. Idempotent: restoring the same snapshot twice yields
+// the same book.
+func (b *Orderbook) Restore(snap OrderbookSnapshot) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.bids = newBookSide(types.SideBuy)
+	b.asks = newBookSide(types.SideSell)
+	b.seq = snap.seq
+	// snap.orders is sorted by Sequence, so appending rebuilds FIFO order within
+	// each price level correctly.
+	for _, v := range snap.orders {
+		price, err := parsePositiveDecimal(v.Price)
+		if err != nil {
+			continue // a captured order always had a valid price; skip defensively
+		}
+		ro := &restingOrder{view: v, priceKey: price.String()}
+		b.side(v.Side).insert(ro, price)
+	}
+}
+
 func (b *Orderbook) side(side types.OrderSide) *bookSide {
 	if side == types.SideBuy {
 		return b.bids

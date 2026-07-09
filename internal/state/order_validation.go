@@ -97,6 +97,19 @@ func (r *InMemoryOrderNullifiers) MarkUsed(nullifier string) {
 	r.used[nullifier] = struct{}{}
 }
 
+// Unmark releases a previously-marked nullifier (STATE-T10 rollback: an order
+// whose fill/cancel is being reverted must become usable again). Idempotent —
+// unmarking an unknown nullifier is a no-op.
+func (r *InMemoryOrderNullifiers) Unmark(nullifier string) {
+	nullifier = strings.TrimSpace(nullifier)
+	if nullifier == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.used, nullifier)
+}
+
 // alwaysFreshNullifiers is the default when no registry is injected: nothing is
 // ever "used". Fine for tests / single-shot validation.
 type alwaysFreshNullifiers struct{}
