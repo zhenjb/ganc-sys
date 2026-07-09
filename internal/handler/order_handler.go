@@ -68,6 +68,46 @@ func (h *OrderHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, http.StatusOK, result)
 }
 
+// CancelOrder handles DELETE /api/order/{id}?owner=<owner>.
+//
+// {id} is the order's orderHash ("0x…"; the short "ord-…" display id is also
+// accepted). owner comes from the query string (MVP trust model — the real
+// version should authenticate a signed cancel). Maps: 404 unknown id, 403 not
+// the owner, 400 missing owner, 200 with the cancelled order + released state.
+func (h *OrderHandler) CancelOrder(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		response.Error(w, http.StatusBadRequest, "order id is required")
+		return
+	}
+	owner := r.URL.Query().Get("owner")
+
+	result, err := h.orderService.CancelOrder(r.Context(), id, owner)
+	if err != nil {
+		var rejected *service.OrderRejectedError
+		if errors.As(err, &rejected) {
+			response.JSON(w, http.StatusBadRequest, map[string]any{
+				"error":  rejected.Detail,
+				"reason": rejected.Reason,
+			})
+			return
+		}
+		if errors.Is(err, service.ErrOrderNotFound) {
+			response.Error(w, http.StatusNotFound, "order not found")
+			return
+		}
+		if errors.Is(err, service.ErrOrderForbidden) {
+			response.Error(w, http.StatusForbidden, "order belongs to another owner")
+			return
+		}
+
+		response.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	response.JSON(w, http.StatusOK, result)
+}
+
 // GetOrderbook handles GET /api/orderbook/{market}.
 func (h *OrderHandler) GetOrderbook(w http.ResponseWriter, r *http.Request) {
 	market := r.PathValue("market")

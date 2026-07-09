@@ -200,6 +200,25 @@ func subDecimal(a, b decimal) decimal {
 	return decimal{mant: new(big.Int).Sub(am, bm), scale: common}
 }
 
+// SubAmount returns a-b for two non-negative decimal strings with a >= b, as a
+// canonical decimal string. Exported so P4 can do display math (e.g.
+// filled = qty - remaining on cancel, INT-T03) without ever touching float.
+// Returns ErrInvalidDecimal on a malformed input or when b > a.
+func SubAmount(a, b string) (string, error) {
+	da, err := parseDecimal(a)
+	if err != nil {
+		return "", err
+	}
+	db, err := parseDecimal(b)
+	if err != nil {
+		return "", err
+	}
+	if cmpDecimal(da, db) < 0 {
+		return "", ErrInvalidDecimal
+	}
+	return subDecimal(da, db).String(), nil
+}
+
 // String renders the decimal in canonical form: no leading zeros in the integer
 // part (except a single "0"), no trailing zeros in the fraction, no dot when
 // integral. So "10.50" and "010.5" both render "10.5". This canonical form is

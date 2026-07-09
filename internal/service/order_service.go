@@ -27,6 +27,10 @@ type OrderService interface {
 	// GetOrderbook returns a depth snapshot for a market
 	// (GET /api/orderbook/{market}).
 	GetOrderbook(ctx context.Context, market string) (types.OrderbookSnapshot, error)
+	// CancelOrder cancels the resting order identified by id, on behalf of owner
+	// (DELETE /api/order/{id}?owner=). It releases the remaining reserved
+	// collateral and returns the order with status "cancelled".
+	CancelOrder(ctx context.Context, id, owner string) (types.OrderResponse, error)
 }
 
 // Order API service errors. Handlers map these to HTTP status codes so the
@@ -36,6 +40,11 @@ var (
 	ErrOrderFieldsRequired = errors.New("order service: owner, market, side, price and qty are required")
 	// ErrMarketNotFound — the requested market is not in the registry.
 	ErrMarketNotFound = errors.New("order service: market not found")
+	// ErrOrderNotFound — the order id to cancel is unknown (or already gone).
+	// Handler maps to 404. Named distinctly from state.ErrOrderNotFound.
+	ErrOrderNotFound = errors.New("order service: order not found")
+	// ErrOrderForbidden — the caller is not the order's owner. Handler maps to 403.
+	ErrOrderForbidden = errors.New("order service: order belongs to another owner")
 )
 
 // Machine-readable order rejection codes returned to P5 in the 400 body's
@@ -47,6 +56,8 @@ const (
 	ReasonInsufficientBalance = "insufficient_balance"
 	// ReasonDuplicateOrder — an order with this hash is already resting.
 	ReasonDuplicateOrder = "duplicate_order"
+	// ReasonOwnerRequired — DELETE /api/order/{id} was called without ?owner=.
+	ReasonOwnerRequired = "owner_required"
 )
 
 // OrderRejectedError is a client-input rejection (HTTP 400) carrying a stable
@@ -182,6 +193,30 @@ func (s *MockOrderService) GetOrderbook(_ context.Context, market string) (types
 	return book, nil
 }
 
+// CancelOrder (mock) echoes a "cancelled" response for any id so P5 can wire the
+// cancel flow before the real book exists. It holds no state, so it cannot check
+// ownership or a prior fill — the real service (INT-T03) does.
+func (s *MockOrderService) CancelOrder(_ context.Context, id, owner string) (types.OrderResponse, error) {
+	if strings.TrimSpace(id) == "" {
+		return types.OrderResponse{}, ErrOrderFieldsRequired
+	}
+	orderHash := ""
+	if strings.HasPrefix(id, "0x") {
+		orderHash = id
+	}
+	return types.OrderResponse{
+		Order:  types.SignedOrder{Owner: owner},
+		Status: types.OrderStatusCancelled,
+		State: types.OrderState{
+			OrderID:   id,
+			OrderHash: orderHash,
+			Status:    types.OrderStatusCancelled,
+			Remaining: "0",
+			Filled:    "0",
+		},
+	}, nil
+}
+
 // ---------------------------------------------------------------------------
 // RealOrderService (INT-T02) — the real endpoint. It is pure GLUE over P3: it
 // orchestrates STATE-T03 validate → STATE-T04 insert (which fuses STATE-T02
@@ -305,6 +340,92 @@ func (s *RealOrderService) GetOrderbook(_ context.Context, market string) (types
 		BestBid: bestBid,
 		BestAsk: bestAsk,
 	}, nil
+}
+
+// CancelOrder cancels a resting order on behalf of owner (INT-T03), the inverse
+// of CreateOrder. It resolves id → orderHash, then cancels across the book set
+// with an ownership guard: only the owner may cancel, only an open remainder is
+// released (a filled portion is immutable — the reservation was already drawn
+// down by any fills), and the order is removed from the book + marked used so it
+// cannot be replayed. Returns the order with status "cancelled" and the released
+// quantity reflected in State.Filled. Maps to 404 (unknown id) / 403 (not owner).
+func (s *RealOrderService) CancelOrder(_ context.Context, id, owner string) (types.OrderResponse, error) {
+	owner = strings.TrimSpace(owner)
+	if owner == "" {
+		return types.OrderResponse{}, &OrderRejectedError{Reason: ReasonOwnerRequired, Detail: "owner is required to cancel an order"}
+	}
+	orderHash, err := s.resolveOrderHash(id)
+	if err != nil {
+		return types.OrderResponse{}, err
+	}
+
+	view, market, err := s.books.CancelOwned(orderHash, owner)
+	if err != nil {
+		switch {
+		case errors.Is(err, state.ErrOrderNotFound):
+			return types.OrderResponse{}, ErrOrderNotFound
+		case errors.Is(err, state.ErrOrderOwnerMismatch):
+			return types.OrderResponse{}, ErrOrderForbidden
+		default:
+			return types.OrderResponse{}, fmt.Errorf("order service: cancel: %w", err)
+		}
+	}
+
+	// filled = original qty − the remaining (just-released) qty. Whole-number
+	// decimal subtraction, never float.
+	filled, ferr := state.SubAmount(view.Qty, view.Remaining)
+	if ferr != nil {
+		filled = "0" // defensive: view amounts are always valid decimals
+	}
+
+	return types.OrderResponse{
+		Order: types.SignedOrder{
+			Owner:  view.Owner,
+			Market: market,
+			Side:   view.Side,
+			Price:  view.Price,
+			Qty:    view.Qty,
+		},
+		Status: types.OrderStatusCancelled,
+		State: types.OrderState{
+			OrderID:   orderIDFromHash(view.OrderHash),
+			OrderHash: view.OrderHash,
+			Status:    types.OrderStatusCancelled,
+			Remaining: "0", // nothing rests after cancel
+			Filled:    filled,
+		},
+	}, nil
+}
+
+// resolveOrderHash maps the DELETE {id} path value to a book orderHash. The
+// canonical id is the full orderHash ("0x"+64 hex); the short "ord-<16hex>"
+// display id is resolved best-effort by scanning resting orders. An empty or
+// unresolvable id is ErrOrderNotFound.
+func (s *RealOrderService) resolveOrderHash(id string) (string, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", ErrOrderNotFound
+	}
+	if strings.HasPrefix(id, "0x") {
+		return id, nil
+	}
+	if strings.HasPrefix(id, "ord-") {
+		for _, m := range s.books.Markets() {
+			snap := s.books.Book(m).Snapshot()
+			for _, ro := range snap.Bids {
+				if orderIDFromHash(ro.OrderHash) == id {
+					return ro.OrderHash, nil
+				}
+			}
+			for _, ro := range snap.Asks {
+				if orderIDFromHash(ro.OrderHash) == id {
+					return ro.OrderHash, nil
+				}
+			}
+		}
+		return "", ErrOrderNotFound
+	}
+	return id, nil // best-effort: treat as a raw hash
 }
 
 // rejectionFromVerdict maps a STATE-T03 reject verdict to an *OrderRejectedError.

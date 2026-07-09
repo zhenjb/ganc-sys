@@ -39,6 +39,10 @@ var (
 	// ErrOrderNotFound is returned by Cancel/Reduce/RemainingQty for an unknown
 	// orderHash. Sentinel — errors.Is.
 	ErrOrderNotFound = errors.New("orderbook: order not found")
+	// ErrOrderOwnerMismatch is returned by CancelOwned when the requester is not
+	// the order's owner (INT-T03: block cancelling someone else's order).
+	// Sentinel — errors.Is.
+	ErrOrderOwnerMismatch = errors.New("orderbook: order owner mismatch")
 	// ErrInvalidFill is returned when a reduce/fill qty is non-positive or
 	// exceeds the order's remaining. Sentinel — errors.Is.
 	ErrInvalidFill = errors.New("orderbook: invalid fill quantity")
@@ -329,6 +333,46 @@ func (b *Orderbook) Cancel(orderHash string) error {
 	return nil
 }
 
+// CancelOwned is Cancel with an ownership guard (INT-T03). It cancels orderHash
+// only if it belongs to owner, doing the lookup, ownership check and removal
+// under ONE lock so a concurrent match/cancel cannot slip between the check and
+// the removal (the plan's INT-T05 race pitfall). On success it releases the
+// order's remaining reserved collateral (available += remaining reservation) and
+// marks its nullifier consumed so it cannot be replayed, then returns the
+// cancelled resting-order view (whose Remaining is the just-released qty).
+// Returns ErrOrderNotFound for an unknown hash, ErrOrderOwnerMismatch if owner
+// does not match.
+func (b *Orderbook) CancelOwned(orderHash, owner string) (RestingOrder, error) {
+	orderHash = strings.TrimSpace(orderHash)
+	owner = strings.TrimSpace(owner)
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	ro := b.lookupLocked(orderHash)
+	if ro == nil {
+		return RestingOrder{}, fmt.Errorf("%w: %s", ErrOrderNotFound, orderHash)
+	}
+	if ro.view.Owner != owner {
+		return RestingOrder{}, fmt.Errorf("%w: %s", ErrOrderOwnerMismatch, orderHash)
+	}
+	view := ro.view
+	nullifier := ro.view.OrderNullifier
+
+	if !b.side(ro.view.Side).remove(orderHash) {
+		return RestingOrder{}, fmt.Errorf("%w: %s", ErrOrderNotFound, orderHash)
+	}
+	if b.reservation != nil {
+		if _, err := b.reservation.ReleaseOrder(orderHash); err != nil {
+			return RestingOrder{}, fmt.Errorf("orderbook: release on cancel %s: %w", orderHash, err)
+		}
+	}
+	if b.nullifiers != nil && nullifier != "" {
+		b.nullifiers.MarkUsed(nullifier)
+	}
+	return view, nil
+}
+
 // Reduce decrements an order's remaining quantity by fillQty (a partial fill).
 // Priority is preserved (the order keeps its price/sequence slot). When the
 // order becomes fully filled (remaining hits 0) it is removed from the book and
@@ -543,6 +587,36 @@ func (s *BookSet) Book(market string) *Orderbook {
 	bk := NewOrderbook(market, s.reservation, s.nullifiers)
 	s.books[market] = bk
 	return bk
+}
+
+// CancelOwned locates orderHash across every book in the set and cancels it if
+// owner matches, returning the cancelled view and the market it was in. The
+// DELETE /api/order/{id} route carries no market, so P4 cancels by hash alone
+// (INT-T03). It snapshots the book list under the set lock, then delegates to
+// each book's own lock — so a per-book cancel never runs while holding the set
+// lock. Returns ErrOrderNotFound if no book holds the order, or whatever the
+// owning book returns (e.g. ErrOrderOwnerMismatch).
+func (s *BookSet) CancelOwned(orderHash, owner string) (RestingOrder, string, error) {
+	s.mu.Lock()
+	books := make([]*Orderbook, 0, len(s.books))
+	markets := make([]string, 0, len(s.books))
+	for m, bk := range s.books {
+		books = append(books, bk)
+		markets = append(markets, m)
+	}
+	s.mu.Unlock()
+
+	for i, bk := range books {
+		view, err := bk.CancelOwned(orderHash, owner)
+		if err != nil {
+			if errors.Is(err, ErrOrderNotFound) {
+				continue // not in this market's book; keep looking
+			}
+			return RestingOrder{}, markets[i], err // owner mismatch / release error
+		}
+		return view, markets[i], nil
+	}
+	return RestingOrder{}, "", fmt.Errorf("%w: %s", ErrOrderNotFound, orderHash)
 }
 
 // Markets returns the sorted list of markets that have a book.

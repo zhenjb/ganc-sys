@@ -71,6 +71,7 @@ func (r *Router) Routes() http.Handler {
 	if r.orderHandler != nil {
 		mux.HandleFunc("GET /api/markets", r.orderHandler.ListMarkets)
 		mux.HandleFunc("POST /api/order", r.orderHandler.CreateOrder)
+		mux.HandleFunc("DELETE /api/order/{id}", r.orderHandler.CancelOrder)
 		mux.HandleFunc("GET /api/orderbook/{market...}", r.orderHandler.GetOrderbook)
 	}
 
@@ -93,7 +94,7 @@ func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 
 		if req.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
