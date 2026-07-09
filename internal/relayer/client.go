@@ -31,6 +31,17 @@ type Client interface {
 	ClaimWithdraw(ctx context.Context, input ClaimWithdrawInput) (ClaimWithdrawResult, error)
 }
 
+// TradeClient extends the relayer with the trade batch submit (INT-T08). It
+// reuses the SAME MsgSubmitBatchProof / submit-batch-proof command, but the
+// SettlementUpdate carries trades[] and the ProofBundle carries the 8 public
+// inputs ([0..5] core + [6]=tradesRoot + [7]=ordersRoot). Both LocalClient and
+// CosmosClient implement it, so the trade settlement pipeline (INT-T06) submits
+// through the same signer/broadcast machinery as the core path. No new message,
+// no bank transfer — the chain only verifies the proof and commits the new root.
+type TradeClient interface {
+	SubmitTradeBatch(ctx context.Context, input SubmitBatchInput) (SubmitBatchResult, error)
+}
+
 type SubmitBatchInput struct {
 	SettlementUpdate types.SettlementUpdate
 	BatchCommitments types.BatchCommitments
@@ -69,6 +80,11 @@ func NewLocalClient() *LocalClient {
 	return &LocalClient{}
 }
 
+var (
+	_ Client      = (*LocalClient)(nil)
+	_ TradeClient = (*LocalClient)(nil)
+)
+
 func (c *LocalClient) SubmitBatch(ctx context.Context, input SubmitBatchInput) (SubmitBatchResult, error) {
 	if err := validatePublicInputs(input); err != nil {
 		return SubmitBatchResult{}, err
@@ -98,6 +114,37 @@ func (c *LocalClient) SubmitBatch(ctx context.Context, input SubmitBatchInput) (
 		Accepted:        true,
 		ProofStatus:     "accepted",
 		WithdrawRecords: withdrawRecords,
+	}, nil
+}
+
+// SubmitTradeBatch is the local (no-chain) trade submit (INT-T08). It validates
+// the 8-input layout and that the first two inputs bind the settlement roots (the
+// same append-not-reorder consistency the chain verifier enforces), then accepts
+// with a deterministic tx hash. It transfers no funds and verifies no real proof.
+func (c *LocalClient) SubmitTradeBatch(ctx context.Context, input SubmitBatchInput) (SubmitBatchResult, error) {
+	if input.SettlementUpdate.BatchID == "" {
+		return SubmitBatchResult{}, fmt.Errorf("settlementUpdate is required")
+	}
+	if input.ProofBundle.Proof == "" {
+		return SubmitBatchResult{}, fmt.Errorf("proofBundle is required")
+	}
+	if len(input.ProofBundle.PublicInputs) != 8 {
+		return SubmitBatchResult{}, fmt.Errorf("trade proof public inputs must contain 8 values")
+	}
+	if input.ProofBundle.PublicInputs[0] != input.SettlementUpdate.OldStateRoot ||
+		input.ProofBundle.PublicInputs[1] != input.SettlementUpdate.NewStateRoot {
+		return SubmitBatchResult{}, fmt.Errorf("trade proof public inputs do not bind the settlement roots")
+	}
+
+	txHash := hashJSON("local-submit-trade-batch", map[string]any{
+		"settlementUpdate": input.SettlementUpdate,
+		"batchCommitments": input.BatchCommitments,
+		"proofBundle":      input.ProofBundle,
+	})
+	return SubmitBatchResult{
+		TxHash:      txHash,
+		Accepted:    true,
+		ProofStatus: "accepted",
 	}, nil
 }
 

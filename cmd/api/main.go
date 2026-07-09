@@ -274,6 +274,15 @@ func main() {
 	if realOrderService, ok := orderService.(*service.RealOrderService); ok {
 		stateHandler.SetTradeStateProvider(realOrderService)
 		log.Printf("state trading extension wired (GET /api/state ext)")
+
+		// INT-T08 — submit trade batches through the relayer (MsgSubmitBatchProof
+		// with trades[] + 8 public inputs), replacing the INT-T06 stub submitter.
+		// The relayer's mode (local|cosmos) is already selected above; both
+		// implement relayer.TradeClient, so local mode still runs end-to-end.
+		if tradeClient, ok := relayerClient.(relayer.TradeClient); ok {
+			realOrderService.SetTradeSettlement(nil, service.NewRelayerTradeSubmitter(tradeClient))
+			log.Printf("trade batch submit via relayer (mode=%s)", relayerMode)
+		}
 	}
 
 	// INT-T05 — matching trigger. POST /api/order already matches synchronously on

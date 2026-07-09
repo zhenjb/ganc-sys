@@ -151,6 +151,32 @@ func buildSubmitBatchProofFlags(input SubmitBatchInput) (settlementUpdate string
 		return "", "", nil, fmt.Errorf("proofBundle.publicInputs must contain 6 values")
 	}
 
+	return buildSubmitFlags(input, 6)
+}
+
+// buildTradeSubmitBatchProofFlags renders the same three flags for a TRADE batch
+// (INT-T08): identical command and JSON shape, but the proofBundle carries the 8
+// public inputs ([0..5] core + [6]=tradesRoot + [7]=ordersRoot) and the
+// settlementUpdate carries trades[]. Kept pure for on-chain-contract unit tests.
+func buildTradeSubmitBatchProofFlags(input SubmitBatchInput) (settlementUpdate string, batchCommitments string, proofBundle []byte, err error) {
+	return buildSubmitFlags(input, 8)
+}
+
+// buildSubmitFlags is the shared flag builder for submit-batch-proof. wantInputs
+// is 6 for the core circuit and 8 for the trade circuit — the ONLY difference
+// between the two payloads (the obd command, JSON tags and proof-bundle shape are
+// identical, so a batch mixing deposits/withdrawals/trades needs no new message).
+func buildSubmitFlags(input SubmitBatchInput, wantInputs int) (settlementUpdate string, batchCommitments string, proofBundle []byte, err error) {
+	if input.SettlementUpdate.BatchID == "" {
+		return "", "", nil, fmt.Errorf("settlementUpdate.batchId is required")
+	}
+	if input.ProofBundle.Proof == "" {
+		return "", "", nil, fmt.Errorf("proofBundle.proof is required")
+	}
+	if len(input.ProofBundle.PublicInputs) != wantInputs {
+		return "", "", nil, fmt.Errorf("proofBundle.publicInputs must contain %d values", wantInputs)
+	}
+
 	su, err := json.Marshal(input.SettlementUpdate)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("marshal settlementUpdate: %w", err)
@@ -169,12 +195,34 @@ func buildSubmitBatchProofFlags(input SubmitBatchInput) (settlementUpdate string
 	return string(su), string(bc), pb, nil
 }
 
+var _ TradeClient = (*CosmosClient)(nil)
+
 func (c *CosmosClient) SubmitBatch(ctx context.Context, input SubmitBatchInput) (SubmitBatchResult, error) {
 	settlementUpdate, batchCommitments, proofBundle, err := buildSubmitBatchProofFlags(input)
 	if err != nil {
 		return SubmitBatchResult{}, err
 	}
+	return c.submitProofFlags(ctx, settlementUpdate, batchCommitments, proofBundle, input.SettlementUpdate.Withdrawals)
+}
 
+// SubmitTradeBatch signs and broadcasts a trade batch through the same
+// submit-batch-proof tx (INT-T08). trades[] rides inside settlementUpdate and the
+// proofBundle carries the 8 public inputs; the chain verifies the proof and
+// commits the new root (no bank transfer). A CheckTx/DeliverTx rejection is
+// surfaced as (Accepted=false, error) so INT-T06 rolls back and re-enqueues.
+func (c *CosmosClient) SubmitTradeBatch(ctx context.Context, input SubmitBatchInput) (SubmitBatchResult, error) {
+	settlementUpdate, batchCommitments, proofBundle, err := buildTradeSubmitBatchProofFlags(input)
+	if err != nil {
+		return SubmitBatchResult{}, err
+	}
+	return c.submitProofFlags(ctx, settlementUpdate, batchCommitments, proofBundle, input.SettlementUpdate.Withdrawals)
+}
+
+// submitProofFlags writes the proof-bundle temp file, broadcasts the
+// submit-batch-proof tx, optionally waits for block commit, and maps the result.
+// Shared by SubmitBatch (6-input core) and SubmitTradeBatch (8-input trade) so
+// signing / sequence-retry / commit-wait behave identically for both.
+func (c *CosmosClient) submitProofFlags(ctx context.Context, settlementUpdate, batchCommitments string, proofBundle []byte, withdrawals []types.SettlementWithdrawal) (SubmitBatchResult, error) {
 	// The on-chain `--proof-bundle` flag is a `binary` value: cosmos autocli
 	// reads the bytes from a file path. Write the {proof, publicInputs} JSON to a
 	// temp file and pass its path (the settlement/commitments go inline as JSON).
@@ -235,8 +283,8 @@ func (c *CosmosClient) SubmitBatch(ctx context.Context, input SubmitBatchInput) 
 		tx = committed
 	}
 
-	withdrawRecords := make([]types.WithdrawRecord, 0, len(input.SettlementUpdate.Withdrawals))
-	for _, w := range input.SettlementUpdate.Withdrawals {
+	withdrawRecords := make([]types.WithdrawRecord, 0, len(withdrawals))
+	for _, w := range withdrawals {
 		withdrawRecords = append(withdrawRecords, types.WithdrawRecord{
 			WithdrawID:  w.WithdrawID,
 			Owner:       w.Owner,
