@@ -39,4 +39,17 @@ type SettlementUpdate struct {
 	NewStateRoot string                 `json:"newStateRoot"`
 	Deposits     []SettlementDeposit    `json:"deposits"`
 	Withdrawals  []SettlementWithdrawal `json:"withdrawals"`
+
+	// Trades / TradeBatchCommitment are the STATE-T08 trade extension. They are
+	// APPEND-ONLY and `omitempty`: a core (deposit/withdraw-only) batch
+	// serializes byte-identically to the pre-trade schema, so existing vectors
+	// and the on-chain core path are unaffected. A batch may carry deposits,
+	// withdrawals AND trades in one MsgSubmitBatchProof (the chain commits only
+	// the state-root transition for trades — no x/bank message per trade).
+	//
+	//   - Trades: the matched fills (STATE-T05), in matching order.
+	//   - TradeBatchCommitment: single scalar binding tradesRoot+ordersRoot
+	//     (STATE-T07) for this batch — see batch.TradeBatchCommitment.
+	Trades               []Fill `json:"trades,omitempty"`
+	TradeBatchCommitment string `json:"tradeBatchCommitment,omitempty"`
 }

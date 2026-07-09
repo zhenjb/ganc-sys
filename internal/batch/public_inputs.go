@@ -3,7 +3,9 @@ package batch
 import (
 	"errors"
 	"fmt"
+	"strings"
 
+	"github.com/zhenjb/ganc-sys/internal/state"
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
 
@@ -138,6 +140,70 @@ func (b *PublicInputBuilder) Build(upd types.SettlementUpdate, com types.BatchCo
 // NewPublicInputBuilder().Build(upd, com).
 func BuildPublicInputs(upd types.SettlementUpdate, com types.BatchCommitments) ([]string, error) {
 	return (&PublicInputBuilder{}).Build(upd, com)
+}
+
+// ---------------------------------------------------------------------------
+// STATE-T08 — extended (trade) public-input layout.
+//
+// The trade circuit APPENDS two inputs after the locked core [0..5]:
+//
+//	publicInputs[6] = tradesRoot
+//	publicInputs[7] = ordersRoot
+//
+// This is additive: the existing 6-input Build / PublicInputCount for the core
+// circuit (gazk v1) is UNCHANGED, so core proofs keep verifying. A batch with no
+// trades uses the empty-root sentinels (state.EmptyTradesRoot/EmptyOrdersRoot)
+// for [6]/[7] so a core payload still fits the fixed 8-input layout expected by
+// the trade circuit (ZK append-not-reorder agreement).
+// ---------------------------------------------------------------------------
+
+const (
+	PublicInputIdxTradesRoot = 6
+	PublicInputIdxOrdersRoot = 7
+
+	// PublicInputCountWithTrades is the length of the extended vector used by
+	// the trade circuit. The core circuit still uses PublicInputCount (6).
+	PublicInputCountWithTrades = 8
+)
+
+// PublicInputLabelsWithTrades returns the 8 labels for the extended layout.
+func PublicInputLabelsWithTrades() []string {
+	out := make([]string, 0, PublicInputCountWithTrades)
+	out = append(out, PublicInputLabels()...)
+	out = append(out, "tradesRoot", "ordersRoot")
+	return out
+}
+
+// BuildPublicInputsWithTrades assembles the extended 8-input vector: the core
+// [0..5] via Build, then [6]=tradesRoot, [7]=ordersRoot. Empty trade roots are
+// replaced by the empty sentinels so a core (no-trade) batch produces a valid
+// 8-input vector. Verbatim hex — no re-hashing.
+func BuildPublicInputsWithTrades(upd types.SettlementUpdate, com types.BatchCommitments) ([]string, error) {
+	core, err := (&PublicInputBuilder{}).Build(upd, com)
+	if err != nil {
+		return nil, err
+	}
+
+	tradesRoot := com.TradesRoot
+	if strings.TrimSpace(tradesRoot) == "" {
+		tradesRoot = state.EmptyTradesRoot()
+	}
+	ordersRoot := com.OrdersRoot
+	if strings.TrimSpace(ordersRoot) == "" {
+		ordersRoot = state.EmptyOrdersRoot()
+	}
+	if err := validateHex(tradesRoot, "batchCommitments.tradesRoot"); err != nil {
+		return nil, wrapPublicInputErr(err)
+	}
+	if err := validateHex(ordersRoot, "batchCommitments.ordersRoot"); err != nil {
+		return nil, wrapPublicInputErr(err)
+	}
+
+	out := make([]string, PublicInputCountWithTrades)
+	copy(out, core)
+	out[PublicInputIdxTradesRoot] = tradesRoot
+	out[PublicInputIdxOrdersRoot] = ordersRoot
+	return out, nil
 }
 
 // wrapPublicInputErr re-wrap lỗi từ validateHex (vốn đính

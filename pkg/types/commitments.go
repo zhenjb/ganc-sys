@@ -13,4 +13,14 @@ type BatchCommitments struct {
 	WithdrawalsRoot     string `json:"withdrawalsRoot"`
 	NullifiersRoot      string `json:"nullifiersRoot"`
 	WithdrawOutputsRoot string `json:"withdrawOutputsRoot"`
+
+	// TradesRoot / OrdersRoot are the STATE-T07/T08 trade extension, mapped to
+	// public inputs [6] / [7]. APPEND-ONLY and `omitempty`: a core batch leaves
+	// them "" so its BatchCommitments JSON is byte-identical to the pre-trade
+	// schema (existing vectors/index unchanged). When building the extended
+	// 8-input public-input vector, an empty value is substituted by the empty
+	// sentinel root (state.EmptyTradesRoot / state.EmptyOrdersRoot) so a core
+	// proof still verifies against the fixed layout.
+	TradesRoot string `json:"tradesRoot,omitempty"`
+	OrdersRoot string `json:"ordersRoot,omitempty"`
 }
