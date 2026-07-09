@@ -72,6 +72,8 @@ func (r *Router) Routes() http.Handler {
 		mux.HandleFunc("GET /api/markets", r.orderHandler.ListMarkets)
 		mux.HandleFunc("POST /api/order", r.orderHandler.CreateOrder)
 		mux.HandleFunc("DELETE /api/order/{id}", r.orderHandler.CancelOrder)
+		mux.HandleFunc("GET /api/orders", r.orderHandler.ListOrders)
+		mux.HandleFunc("GET /api/trades", r.orderHandler.ListTrades)
 		mux.HandleFunc("GET /api/orderbook/{market...}", r.orderHandler.GetOrderbook)
 	}
 

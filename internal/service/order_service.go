@@ -31,6 +31,11 @@ type OrderService interface {
 	// (DELETE /api/order/{id}?owner=). It releases the remaining reserved
 	// collateral and returns the order with status "cancelled".
 	CancelOrder(ctx context.Context, id, owner string) (types.OrderResponse, error)
+	// ListOpenOrders returns a user's resting (open/partial) orders across all
+	// markets (GET /api/orders?owner=).
+	ListOpenOrders(ctx context.Context, owner string) types.OpenOrdersResponse
+	// ListTrades returns a market's fill history (GET /api/trades?market=).
+	ListTrades(ctx context.Context, market string) types.TradesResponse
 }
 
 // Order API service errors. Handlers map these to HTTP status codes so the
@@ -217,6 +222,50 @@ func (s *MockOrderService) CancelOrder(_ context.Context, id, owner string) (typ
 	}, nil
 }
 
+// ListOpenOrders (mock) returns a single static open order so P5 can render the
+// order-management list before the real book exists. It ignores owner filtering
+// (no state) — the real service filters properly.
+func (s *MockOrderService) ListOpenOrders(_ context.Context, owner string) types.OpenOrdersResponse {
+	if strings.TrimSpace(owner) == "" {
+		return types.OpenOrdersResponse{OpenOrders: []types.OpenOrder{}}
+	}
+	sample := types.OpenOrder{
+		OrderID:   "ord-000000000000mock",
+		OrderHash: "0x" + strings.Repeat("00", 32),
+		Owner:     owner,
+		Market:    "ATOM/USDC",
+		Side:      types.SideBuy,
+		Price:     "99.9",
+		Qty:       "12",
+		Remaining: "12",
+		Filled:    "0",
+		Status:    types.OrderStatusOpen,
+		Sequence:  1,
+	}
+	return types.OpenOrdersResponse{OpenOrders: []types.OpenOrder{sample}}
+}
+
+// ListTrades (mock) returns a single static fill so P5 can render the trades
+// feed. The real service returns the live per-market history.
+func (s *MockOrderService) ListTrades(_ context.Context, market string) types.TradesResponse {
+	if strings.TrimSpace(market) == "" {
+		return types.TradesResponse{Fills: []types.Fill{}}
+	}
+	sample := types.Fill{
+		TradeID:        "0x" + strings.Repeat("11", 32),
+		Market:         market,
+		MakerOrderHash: "0x" + strings.Repeat("22", 32),
+		TakerOrderHash: "0x" + strings.Repeat("33", 32),
+		Price:          "100",
+		Qty:            "5",
+		MakerFee:       "2",
+		TakerFee:       "5",
+		Buyer:          "cosmos1alice",
+		Seller:         "cosmos1bob",
+	}
+	return types.TradesResponse{Fills: []types.Fill{sample}}
+}
+
 // ---------------------------------------------------------------------------
 // RealOrderService (INT-T02) — the real endpoint. It is pure GLUE over P3: it
 // orchestrates STATE-T03 validate → STATE-T04 insert (which fuses STATE-T02
@@ -235,6 +284,7 @@ type RealOrderService struct {
 	books      *state.BookSet
 	manager    *state.OffchainStateManager
 	nullifiers *state.InMemoryOrderNullifiers
+	trades     TradeStore
 	now        func() int64
 }
 
@@ -271,8 +321,17 @@ func NewRealOrderService(manager *state.OffchainStateManager, markets []types.Ma
 		books:      books,
 		manager:    manager,
 		nullifiers: nullifiers,
+		trades:     NewInMemoryTradeStore(),
 		now:        now,
 	}, nil
+}
+
+// RecordFills appends matching-engine fills to the trade history so they surface
+// in GET /api/trades. This is the INT-T05 (matching trigger) write seam: after
+// STATE-T05 Match produces fills, the trigger calls RecordFills. Exposed now so
+// INT-T04 has a populated read path and the two tasks integrate cleanly.
+func (s *RealOrderService) RecordFills(fills []types.Fill) {
+	s.trades.Record(fills)
 }
 
 func (s *RealOrderService) ListMarkets(_ context.Context) types.MarketsResponse {
@@ -340,6 +399,49 @@ func (s *RealOrderService) GetOrderbook(_ context.Context, market string) (types
 		BestBid: bestBid,
 		BestAsk: bestAsk,
 	}, nil
+}
+
+// ListOpenOrders returns owner's resting orders across all markets (INT-T04),
+// each tagged with its market and fill progress. An empty owner yields an empty
+// list (no order has an empty owner). Reads consistent per-book snapshots.
+func (s *RealOrderService) ListOpenOrders(_ context.Context, owner string) types.OpenOrdersResponse {
+	owned := s.books.OrdersByOwner(owner)
+	out := make([]types.OpenOrder, 0, len(owned))
+	for _, o := range owned {
+		ro := o.Order
+		filled, err := state.SubAmount(ro.Qty, ro.Remaining)
+		if err != nil {
+			filled = "0" // defensive: book amounts are always valid decimals
+		}
+		status := types.OrderStatusOpen
+		if filled != "0" {
+			status = types.OrderStatusPartial
+		}
+		out = append(out, types.OpenOrder{
+			OrderID:   orderIDFromHash(ro.OrderHash),
+			OrderHash: ro.OrderHash,
+			Owner:     ro.Owner,
+			Market:    o.Market,
+			Side:      ro.Side,
+			Price:     ro.Price,
+			Qty:       ro.Qty,
+			Remaining: ro.Remaining,
+			Filled:    filled,
+			Status:    status,
+			Sequence:  ro.Sequence,
+		})
+	}
+	return types.OpenOrdersResponse{OpenOrders: out}
+}
+
+// ListTrades returns a market's fill history (INT-T04), populated by the INT-T05
+// matching trigger via RecordFills. Unknown/empty market yields an empty list.
+func (s *RealOrderService) ListTrades(_ context.Context, market string) types.TradesResponse {
+	fills := s.trades.ByMarket(market)
+	if fills == nil {
+		fills = []types.Fill{}
+	}
+	return types.TradesResponse{Fills: fills}
 }
 
 // CancelOrder cancels a resting order on behalf of owner (INT-T03), the inverse

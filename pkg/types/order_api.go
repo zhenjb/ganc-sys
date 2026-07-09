@@ -72,3 +72,31 @@ type OrderbookSnapshot struct {
 	BestBid string       `json:"bestBid"`
 	BestAsk string       `json:"bestAsk"`
 }
+
+// OpenOrder is one of a user's resting (open/partial) orders, returned by
+// GET /api/orders?owner=. It carries the market (the depth snapshot aggregates
+// it away) plus per-order fill progress so P5 can render an order-management row.
+type OpenOrder struct {
+	OrderID   string      `json:"orderId"`
+	OrderHash string      `json:"orderHash"` // hex (0x…)
+	Owner     string      `json:"owner"`
+	Market    string      `json:"market"`
+	Side      OrderSide   `json:"side"`
+	Price     string      `json:"price"`     // decimal string
+	Qty       string      `json:"qty"`       // original base qty, decimal string
+	Remaining string      `json:"remaining"` // still-open base qty, decimal string
+	Filled    string      `json:"filled"`    // qty - remaining, decimal string
+	Status    OrderStatus `json:"status"`    // open | partial
+	Sequence  uint64      `json:"sequence"`  // book receive order (price-time tiebreak)
+}
+
+// OpenOrdersResponse is the body of GET /api/orders?owner=.
+type OpenOrdersResponse struct {
+	OpenOrders []OpenOrder `json:"openOrders"`
+}
+
+// TradesResponse is the body of GET /api/trades?market= — a market's fill
+// history (STATE-T05 Fills), most-recent-appended last.
+type TradesResponse struct {
+	Fills []Fill `json:"fills"`
+}

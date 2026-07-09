@@ -108,6 +108,22 @@ func (h *OrderHandler) CancelOrder(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, http.StatusOK, result)
 }
 
+// ListOrders handles GET /api/orders?owner= — a user's open/partial orders.
+func (h *OrderHandler) ListOrders(w http.ResponseWriter, r *http.Request) {
+	owner := r.URL.Query().Get("owner")
+	result := h.orderService.ListOpenOrders(r.Context(), owner)
+
+	response.JSON(w, http.StatusOK, result)
+}
+
+// ListTrades handles GET /api/trades?market= — a market's fill history.
+func (h *OrderHandler) ListTrades(w http.ResponseWriter, r *http.Request) {
+	market := r.URL.Query().Get("market")
+	result := h.orderService.ListTrades(r.Context(), market)
+
+	response.JSON(w, http.StatusOK, result)
+}
+
 // GetOrderbook handles GET /api/orderbook/{market}.
 func (h *OrderHandler) GetOrderbook(w http.ResponseWriter, r *http.Request) {
 	market := r.PathValue("market")

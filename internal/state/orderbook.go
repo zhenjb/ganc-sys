@@ -619,6 +619,51 @@ func (s *BookSet) CancelOwned(orderHash, owner string) (RestingOrder, string, er
 	return RestingOrder{}, "", fmt.Errorf("%w: %s", ErrOrderNotFound, orderHash)
 }
 
+// OwnedRestingOrder pairs a resting order with the market whose book holds it
+// (RestingOrder has no market field). Returned by OrdersByOwner for the
+// GET /api/orders?owner= read model (INT-T04).
+type OwnedRestingOrder struct {
+	Market string
+	Order  RestingOrder
+}
+
+// OrdersByOwner returns every resting order owned by `owner` across all markets,
+// deterministically ordered (by market, then price-time priority within each
+// book). Each book is read via its own Snapshot() (a consistent copy under the
+// book lock), so the result never observes a book mid-mutation (INT-T04 pitfall).
+func (s *BookSet) OrdersByOwner(owner string) []OwnedRestingOrder {
+	owner = strings.TrimSpace(owner)
+
+	s.mu.Lock()
+	books := make(map[string]*Orderbook, len(s.books))
+	for m, bk := range s.books {
+		books[m] = bk
+	}
+	s.mu.Unlock()
+
+	markets := make([]string, 0, len(books))
+	for m := range books {
+		markets = append(markets, m)
+	}
+	sort.Strings(markets)
+
+	out := make([]OwnedRestingOrder, 0)
+	for _, m := range markets {
+		snap := books[m].Snapshot()
+		for _, ro := range snap.Bids {
+			if ro.Owner == owner {
+				out = append(out, OwnedRestingOrder{Market: m, Order: ro})
+			}
+		}
+		for _, ro := range snap.Asks {
+			if ro.Owner == owner {
+				out = append(out, OwnedRestingOrder{Market: m, Order: ro})
+			}
+		}
+	}
+	return out
+}
+
 // Markets returns the sorted list of markets that have a book.
 func (s *BookSet) Markets() []string {
 	s.mu.Lock()
