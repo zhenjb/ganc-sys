@@ -15,6 +15,7 @@ type RouterDeps struct {
 	ProofHandler              *handler.ProofHandler
 	ChainQueryHandler         *handler.ChainQueryHandler
 	OffchainSettlementHandler *handler.OffchainSettlementHandler
+	OrderHandler              *handler.OrderHandler
 }
 
 type Router struct {
@@ -26,6 +27,7 @@ type Router struct {
 	proofHandler              *handler.ProofHandler
 	chainQueryHandler         *handler.ChainQueryHandler
 	offchainSettlementHandler *handler.OffchainSettlementHandler
+	orderHandler              *handler.OrderHandler
 }
 
 func NewRouter(deps RouterDeps) *Router {
@@ -38,6 +40,7 @@ func NewRouter(deps RouterDeps) *Router {
 		proofHandler:              deps.ProofHandler,
 		chainQueryHandler:         deps.ChainQueryHandler,
 		offchainSettlementHandler: deps.OffchainSettlementHandler,
+		orderHandler:              deps.OrderHandler,
 	}
 }
 
@@ -61,6 +64,15 @@ func (r *Router) Routes() http.Handler {
 	mux.HandleFunc("POST /api/batch/submit", r.batchHandler.SubmitBatch)
 
 	mux.HandleFunc("POST /api/proof/generate", r.proofHandler.GenerateProof)
+
+	// INT-T01 — order / orderbook API (mock; INT-T02..T04 swap in real P3 logic
+	// behind the same routes). The {market...} trailing wildcard captures market
+	// ids that contain a slash, e.g. GET /api/orderbook/ATOM/USDC.
+	if r.orderHandler != nil {
+		mux.HandleFunc("GET /api/markets", r.orderHandler.ListMarkets)
+		mux.HandleFunc("POST /api/order", r.orderHandler.CreateOrder)
+		mux.HandleFunc("GET /api/orderbook/{market...}", r.orderHandler.GetOrderbook)
+	}
 
 	if r.chainQueryHandler != nil {
 		mux.HandleFunc("GET /api/chain/withdraw-records/{withdrawId}", r.chainQueryHandler.GetWithdrawRecord)

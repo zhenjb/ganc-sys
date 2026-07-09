@@ -251,6 +251,13 @@ func main() {
 	chainQueryService := service.NewChainQueryService(chainQueryClient)
 	chainQueryHandler := handler.NewChainQueryHandler(chainQueryService)
 
+	// INT-T01 — order/orderbook API. Starts as a static mock so the frontend
+	// (P5) can build against a frozen contract from day one; INT-T02..T04 will
+	// replace NewMockOrderService with the real P3-backed OrderService behind the
+	// same routes.
+	orderService := service.NewMockOrderService()
+	orderHandler := handler.NewOrderHandler(orderService)
+
 	router := api.NewRouter(api.RouterDeps{
 		HealthHandler:             healthHandler,
 		StateHandler:              stateHandler,
@@ -260,6 +267,7 @@ func main() {
 		ProofHandler:              proofHandler,
 		ChainQueryHandler:         chainQueryHandler,
 		OffchainSettlementHandler: offchainSettlementHandler,
+		OrderHandler:              orderHandler,
 	})
 
 	addr := ":" + port
