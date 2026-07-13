@@ -38,6 +38,16 @@ EXPECTED_VK_ID="${EXPECTED_VK_ID:-gazk-balance-smoke-v1}"
 CORS_ALLOWED_ORIGINS="${CORS_ALLOWED_ORIGINS:-https://*.app.github.dev,http://localhost:3000}"
 START_GAZK="${START_GAZK:-1}"
 
+# DEN-D1/DEN-D2: order-market registry seed. When BOTH are empty the backend uses
+# its built-in DefaultMarkets (uatom/uusdc/uosmo). To trade on a chain that funds
+# different denoms, point ORDER_MARKETS_FILE at a matching config, e.g.:
+#   ORDER_MARKETS_FILE=docs/matching_orderbook/markets.sample.json
+# or inline via ORDER_MARKETS_JSON='[{"market":"ATOM/USDT","baseDenom":"ATOM",...}]'.
+# NOTE: ASSET_DENOM below is only the deposit/withdraw DEMO denom (shown in READY);
+# the tradable market denoms come from here, not from ASSET_DENOM.
+ORDER_MARKETS_JSON="${ORDER_MARKETS_JSON:-}"
+ORDER_MARKETS_FILE="${ORDER_MARKETS_FILE:-}"
+
 # DB / off-chain settlement config.
 DATABASE_URL="${DATABASE_URL:-postgres://ganc:ganc@localhost:5432/ganc_sys?sslmode=disable}"
 DB_HOST="${DB_HOST:-localhost}"
@@ -175,6 +185,7 @@ fi
   CHAIN_NODE="$CHAIN_NODE" CHAIN_RPC_URL="$CHAIN_RPC_URL" CHAIN_REST_URL="$CHAIN_REST_URL" \
   RELAYER_FROM="$RELAYER_FROM" CHAIN_KEYRING_BACKEND="$CHAIN_KEYRING_BACKEND" \
   CHAIN_FEES="$CHAIN_FEES" \
+  ORDER_MARKETS_JSON="$ORDER_MARKETS_JSON" ORDER_MARKETS_FILE="$ORDER_MARKETS_FILE" \
   DATABASE_URL="$DATABASE_URL" \
   WITHDRAW_REQUEST_STORE=postgres WITHDRAW_RECORD_STORE=postgres \
   BATCH_BUILD_STORE=postgres PROOF_BUNDLE_STORE=postgres SUBMIT_BATCH_STORE=postgres \
@@ -204,6 +215,10 @@ else
 fi
 ok "backend health OK"
 
+if [ -n "$ORDER_MARKETS_JSON" ]; then MARKETS_SRC="inline ORDER_MARKETS_JSON"
+elif [ -n "$ORDER_MARKETS_FILE" ]; then MARKETS_SRC="file:$ORDER_MARKETS_FILE"
+else MARKETS_SRC="default (uatom/uusdc, uosmo/uusdc)"; fi
+
 phase "READY (DB mode)"
 cat <<EOF
   API      : $API_BASE_URL
@@ -214,7 +229,8 @@ cat <<EOF
   build    : BATCH_BUILD_SOURCE=pending  (batch/build auto-collects pending)
   genesis  : OFFCHAIN_GENESIS_ROOT=$OFFCHAIN_GENESIS_ROOT  (matches chain genesis root)
   signer   : $RELAYER_FROM = $ALICE_ADDR
-  denom    : $ASSET_DENOM
+  denom    : $ASSET_DENOM   (deposit/withdraw demo denom only)
+  markets  : $MARKETS_SRC   (tradable order-book denoms — set ORDER_MARKETS_FILE to align to this chain)
   sequencer: SETTLEMENT_WORKER_ENABLED=$SETTLEMENT_WORKER_ENABLED (interval=$SETTLEMENT_INTERVAL)
   logs     : /tmp/api.real.log , /tmp/gazk.real.log
 

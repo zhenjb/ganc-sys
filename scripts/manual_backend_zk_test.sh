@@ -39,6 +39,9 @@ GAZK_URL="${GAZK_URL:-http://localhost:$GAZK_PORT}"
 DATABASE_URL="${DATABASE_URL:-postgres://ganc:ganc@localhost:5432/ganc_sys?sslmode=disable}"
 PG_CONTAINER="${PG_CONTAINER:-ganc_sys_postgres}"
 EXPECTED_VK_ID="${EXPECTED_VK_ID:-gazk-balance-smoke-v1}"
+# DEN-D2: denom is config-driven (no hardcoded literal). Override with e.g.
+# DENOM=USDT when the target chain funds USDT instead of the uusdc default.
+DENOM="${DENOM:-uusdc}"
 
 PASS=0
 FAIL=0
@@ -163,9 +166,9 @@ fi
 # ===========================================================================
 phase "PHASE 4 — Deposit 100"
 # ===========================================================================
-note "POST /api/deposit {owner:cosmos1alice, denom:uusdc, amount:100}"
+note "POST /api/deposit {owner:cosmos1alice, denom:$DENOM, amount:100}"
 curl -s -X POST "$API_BASE_URL/api/deposit" -H 'Content-Type: application/json' \
-  -d '{"owner":"cosmos1alice","denom":"uusdc","amount":"100"}' -o deposit.json
+  -d "{\"owner\":\"cosmos1alice\",\"denom\":\"$DENOM\",\"amount\":\"100\"}" -o deposit.json
 DEP_ID="$(jget deposit.json "d['depositRecord']['depositId']")"
 [ -n "$DEP_ID" ] && ok "deposit indexed (depositId=$DEP_ID)" || { cat deposit.json; bad "deposit failed"; }
 
@@ -174,7 +177,7 @@ phase "PHASE 5 — Withdraw request 40"
 # ===========================================================================
 note "POST /api/withdraw-request {amount:40, destination:cosmos1alice}"
 curl -s -X POST "$API_BASE_URL/api/withdraw-request" -H 'Content-Type: application/json' \
-  -d '{"owner":"cosmos1alice","denom":"uusdc","amount":"40","destination":"cosmos1alice"}' -o withdraw.json
+  -d "{\"owner\":\"cosmos1alice\",\"denom\":\"$DENOM\",\"amount\":\"40\",\"destination\":\"cosmos1alice\"}" -o withdraw.json
 WD_ID="$(jget withdraw.json "d['withdrawRequest']['withdrawId']")"
 [ -n "$WD_ID" ] && ok "withdraw request created (withdrawId=$WD_ID)" || { cat withdraw.json; bad "withdraw-request failed"; }
 
@@ -248,8 +251,8 @@ note "POST /api/withdraw/claim {withdrawId:$WD_ID}"
 curl -s -X POST "$API_BASE_URL/api/withdraw/claim" -H 'Content-Type: application/json' \
   -d "{\"withdrawId\":\"$WD_ID\"}" -o claim.json
 CLAIMED="$(jget claim.json "d['withdrawRecord']['claimed']")"
-USER_BAL="$(jget claim.json "d['balances']['userBalances']['cosmos1alice/uusdc']")"
-MOD_BAL="$(jget claim.json "d['balances']['moduleAccountBalance']['uusdc']")"
+USER_BAL="$(jget claim.json "d['balances']['userBalances']['cosmos1alice/$DENOM']")"
+MOD_BAL="$(jget claim.json "d['balances']['moduleAccountBalance']['$DENOM']")"
 [ "$CLAIMED" = "True" ] && ok "withdraw claimed" || { cat claim.json; bad "claim failed"; }
 [ "$USER_BAL" = "940" ] && ok "user balance = 940 (canonical)" || bad "user balance = $USER_BAL, expected 940"
 [ "$MOD_BAL" = "60" ]  && ok "module account balance = 60 (canonical)" || bad "module balance = $MOD_BAL, expected 60"

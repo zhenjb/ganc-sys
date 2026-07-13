@@ -41,6 +41,12 @@ EXPECTED_VK_ID="${EXPECTED_VK_ID:-gazk-balance-smoke-v1}"
 CORS_ALLOWED_ORIGINS="${CORS_ALLOWED_ORIGINS:-https://*.app.github.dev,http://localhost:3000}"
 START_GAZK="${START_GAZK:-1}"
 
+# DEN-D1/DEN-D2: order-market registry seed. Empty → built-in DefaultMarkets
+# (uatom/uusdc). Point ORDER_MARKETS_FILE at a chain-matched config to trade with
+# the denoms this chain funds. ASSET_DENOM below is only the deposit-demo denom.
+ORDER_MARKETS_JSON="${ORDER_MARKETS_JSON:-}"
+ORDER_MARKETS_FILE="${ORDER_MARKETS_FILE:-}"
+
 c_reset=$'\033[0m'; c_blue=$'\033[1;34m'; c_green=$'\033[1;32m'; c_red=$'\033[1;31m'; c_yellow=$'\033[1;33m'
 phase() { echo; echo "${c_blue}== $* ==${c_reset}"; }
 ok()   { echo "${c_green}[ ok ]${c_reset} $*"; }
@@ -97,6 +103,7 @@ sleep 1
   CHAIN_NODE="$CHAIN_NODE" CHAIN_RPC_URL="$CHAIN_RPC_URL" CHAIN_REST_URL="$CHAIN_REST_URL" \
   RELAYER_FROM="$RELAYER_FROM" CHAIN_KEYRING_BACKEND="$CHAIN_KEYRING_BACKEND" \
   CHAIN_FEES="$CHAIN_FEES" \
+  ORDER_MARKETS_JSON="$ORDER_MARKETS_JSON" ORDER_MARKETS_FILE="$ORDER_MARKETS_FILE" \
   go run ./cmd/api >/tmp/api.real.log 2>&1
 ) &
 wait_http "$API_BASE_URL/api/health" 60 || { tail -30 /tmp/api.real.log; die "backend did not start (see /tmp/api.real.log)"; }
@@ -110,13 +117,18 @@ else
 fi
 ok "backend health OK"
 
+if [ -n "$ORDER_MARKETS_JSON" ]; then MARKETS_SRC="inline ORDER_MARKETS_JSON"
+elif [ -n "$ORDER_MARKETS_FILE" ]; then MARKETS_SRC="file:$ORDER_MARKETS_FILE"
+else MARKETS_SRC="default (uatom/uusdc, uosmo/uusdc)"; fi
+
 phase "READY"
 cat <<EOF
   API      : $API_BASE_URL
   gazk     : $GAZK_URL   (vkId=$GOT_VK)
   chain    : RPC $CHAIN_RPC_URL | REST $CHAIN_REST_URL | chain-id $CHAIN_ID
   signer   : $RELAYER_FROM = $ALICE_ADDR
-  denom    : $ASSET_DENOM
+  denom    : $ASSET_DENOM   (deposit/withdraw demo denom only)
+  markets  : $MARKETS_SRC   (tradable order-book denoms — set ORDER_MARKETS_FILE to align)
   logs     : /tmp/api.real.log , /tmp/gazk.real.log
 
   Next: bash scripts/e2e_real_chain_flow.sh     # SYS-07 Alice 100/40

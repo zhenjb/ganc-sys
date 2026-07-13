@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -153,6 +154,25 @@ func TestMarketsFromEnvFile(t *testing.T) {
 	}
 	if source != "file:"+path || markets[0].BaseDenom != "uatom" {
 		t.Fatalf("source=%q markets=%+v", source, markets)
+	}
+}
+
+// DEN-D2 anti-drift guard: the documented sample config
+// (docs/matching_orderbook/markets.sample.json) must stay byte-equivalent to the
+// canonical DefaultMarkets(). If someone edits one denom without the other, this
+// fails — preventing a stray/mismatched denom from creeping back into the docs.
+func TestSampleConfigMatchesDefaultMarkets(t *testing.T) {
+	path := filepath.Join("..", "..", "docs", "matching_orderbook", "markets.sample.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read sample config %s: %v", path, err)
+	}
+	got, err := parseMarketsJSON(data)
+	if err != nil {
+		t.Fatalf("parse sample config: %v", err)
+	}
+	if want := DefaultMarkets(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("markets.sample.json drifted from DefaultMarkets()\n got=%+v\nwant=%+v", got, want)
 	}
 }
 
