@@ -407,10 +407,20 @@ func newOrderService(mode string, offchainStateManager *appstate.OffchainStateMa
 	default:
 		log.Printf("unknown ORDER_API_MODE=%q, falling back to real", mode)
 	}
-	svc, err := service.NewRealOrderService(offchainStateManager, service.DefaultMarkets(), nil)
+	// DEN-D1: resolve the market seed from config (ORDER_MARKETS_JSON /
+	// ORDER_MARKETS_FILE), falling back to the built-in DefaultMarkets(). This
+	// lets an operator align the backend's market denoms to the target chain
+	// without recompiling. A malformed config is fatal — the backend must not
+	// start serving a half-wired order API.
+	markets, marketsSource, err := service.MarketsFromEnv()
+	if err != nil {
+		log.Fatalf("order markets config: %v", err)
+	}
+	svc, err := service.NewRealOrderService(offchainStateManager, markets, nil)
 	if err != nil {
 		log.Fatalf("order service (real): %v", err)
 	}
+	log.Printf("order markets source=%s count=%d", marketsSource, len(markets))
 	return svc
 }
 
