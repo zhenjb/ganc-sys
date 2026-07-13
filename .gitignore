@@ -1,3 +1,4 @@
 *.json
 phase-*
 matching_orderbook/
+.gazk-keys/

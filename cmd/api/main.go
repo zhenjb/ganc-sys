@@ -46,6 +46,12 @@ const indexerModeChain = "chain"
 const orderAPIModeReal = "real"
 const orderAPIModeMock = "mock"
 
+// Trade prover mode selectors (ZK-T10). "local" (default) uses the Wave-1 stub
+// prover + relayer submit; "remote" calls A's gazk /prove {trade} for a real
+// Groth16 proof and verifies it against the real vk.
+const tradeProverModeLocal = "local"
+const tradeProverModeRemote = "remote"
+
 func main() {
 	port := getenv("PORT", "8080")
 
@@ -275,13 +281,23 @@ func main() {
 		stateHandler.SetTradeStateProvider(realOrderService)
 		log.Printf("state trading extension wired (GET /api/state ext)")
 
-		// INT-T08 — submit trade batches through the relayer (MsgSubmitBatchProof
-		// with trades[] + 8 public inputs), replacing the INT-T06 stub submitter.
-		// The relayer's mode (local|cosmos) is already selected above; both
-		// implement relayer.TradeClient, so local mode still runs end-to-end.
-		if tradeClient, ok := relayerClient.(relayer.TradeClient); ok {
+		// ZK-T10 — REAL gazk trade prover. When TRADE_PROVER_MODE=remote, settle
+		// through A's gazk /prove {trade} for a real Groth16 proof and verify it
+		// against the real vk (/verify-trade), instead of the Wave-1 local stub.
+		// Requires gazk reachable at GAZK_TRADE_URL, started with a stable
+		// GAZK_KEY_DIR so pk/vk persist and match the vk B embeds on-chain.
+		if getenv("TRADE_PROVER_MODE", tradeProverModeLocal) == tradeProverModeRemote {
+			gazkURL := getenv("GAZK_TRADE_URL", "http://localhost:8090")
+			realOrderService.SetTradeSettlement(
+				service.NewRemoteTradeProver(gazkURL),
+				service.NewRemoteTradeVerifierSubmitter(gazkURL),
+			)
+			log.Printf("trade prove+verify via REAL gazk (ZK-T10): %s", gazkURL)
+		} else if tradeClient, ok := relayerClient.(relayer.TradeClient); ok {
+			// INT-T08 — default: submit trade batches through the relayer
+			// (MsgSubmitBatchProof with trades[] + 8 public inputs), stub prover.
 			realOrderService.SetTradeSettlement(nil, service.NewRelayerTradeSubmitter(tradeClient))
-			log.Printf("trade batch submit via relayer (mode=%s)", relayerMode)
+			log.Printf("trade batch submit via relayer (mode=%s, stub prover)", relayerMode)
 		}
 	}
 

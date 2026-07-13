@@ -206,8 +206,13 @@ func TestBuildSubmitBatchProofFlags(t *testing.T) {
 	if err := json.Unmarshal(pb, &decoded); err != nil {
 		t.Fatalf("proof-bundle decode: %v", err)
 	}
-	if len(decoded.PublicInputs) != 6 {
-		t.Fatalf("expected 6 public inputs, got %d", len(decoded.PublicInputs))
+	// The chain derives a uniform 8 public inputs for every batch; a core
+	// (no-trade) submit pads [6]/[7] to the all-zeros sentinel.
+	if len(decoded.PublicInputs) != 8 {
+		t.Fatalf("expected 8 public inputs (uniform chain layout), got %d", len(decoded.PublicInputs))
+	}
+	if decoded.PublicInputs[6] != chainEmptyRootSentinel || decoded.PublicInputs[7] != chainEmptyRootSentinel {
+		t.Fatalf("core [6]/[7] must be the all-zeros sentinel, got %q/%q", decoded.PublicInputs[6], decoded.PublicInputs[7])
 	}
 }
 

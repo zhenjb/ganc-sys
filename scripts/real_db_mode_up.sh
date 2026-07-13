@@ -43,9 +43,11 @@ DATABASE_URL="${DATABASE_URL:-postgres://ganc:ganc@localhost:5432/ganc_sys?sslmo
 DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-5432}"
 # Pin the off-chain genesis root to the chain's genesis currentStateRoot so the
-# FIRST pending batch's oldStateRoot is accepted on-chain. ganc-trade seeds the
-# zkdex genesis root to the "0xrootA" placeholder, so match it here.
-OFFCHAIN_GENESIS_ROOT="${OFFCHAIN_GENESIS_ROOT:-0xrootA}"
+# FIRST pending batch's oldStateRoot is accepted on-chain. The ganc-trade zkdex
+# module now seeds the genesis root to DefaultStateRoot = 32-byte all-zeros
+# (x/zkdex/types/genesis.go), and validates every public input as 32-byte hex, so
+# the old "0xrootA" placeholder is rejected. Match the all-zeros genesis here.
+OFFCHAIN_GENESIS_ROOT="${OFFCHAIN_GENESIS_ROOT:-0x0000000000000000000000000000000000000000000000000000000000000000}"
 
 # The off-chain DB (pending queue + state cursor) MUST reset in lockstep with the
 # chain. Since `ganc chain` uses --reset-once (chain always boots at genesis

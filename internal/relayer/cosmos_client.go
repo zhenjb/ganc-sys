@@ -130,6 +130,46 @@ type chainProofBundle struct {
 	PublicInputs []string `json:"publicInputs"`
 }
 
+// chainEmptyRootSentinel is the 32-byte all-zeros root the x/zkdex chain uses for
+// the trade public inputs [6]=tradesRoot / [7]=ordersRoot of a batch with NO
+// trades (its emptyPublicInputRootSentinel). The chain now derives a UNIFORM 8
+// public inputs for EVERY batch (derivePublicInputs), so a core deposit/withdraw
+// submit must carry [6]/[7] = this sentinel — NOT P3's SHA-256 empty-root — or the
+// on-chain DeepEqual(bundle.publicInputs, derived8) rejects it.
+const chainEmptyRootSentinel = "0x0000000000000000000000000000000000000000000000000000000000000000"
+
+// normalizeCoreSubmitToEight adapts a core (deposit/withdraw, no-trade) submit to
+// the chain's uniform 8-input contract: it pads/forces publicInputs[6]/[7] to the
+// all-zeros sentinel and clears the trade roots in batchCommitments (the chain
+// requires them empty-or-sentinel when no trades are present). Returns a copy;
+// the caller's slice/struct are not mutated.
+//
+// NOTE: the gazk core proof is still a 6-input Groth16 proof; padding to 8 makes
+// the SUBMIT bundle match the chain's uniform layout, which the chain's stub
+// verifier accepts. When a real on-chain verifier lands, the gazk core circuit
+// must also expose 8 public inputs (or the chain must select a 6-input core
+// verifier) — tracked as a Wave-2 item.
+func normalizeCoreSubmitToEight(input SubmitBatchInput) (SubmitBatchInput, error) {
+	pis := input.ProofBundle.PublicInputs
+	switch len(pis) {
+	case 6:
+		out := append(append([]string(nil), pis...), chainEmptyRootSentinel, chainEmptyRootSentinel)
+		input.ProofBundle.PublicInputs = out
+	case 8:
+		out := append([]string(nil), pis...)
+		out[6] = chainEmptyRootSentinel
+		out[7] = chainEmptyRootSentinel
+		input.ProofBundle.PublicInputs = out
+	default:
+		return SubmitBatchInput{}, fmt.Errorf("proofBundle.publicInputs must contain 6 or 8 values, got %d", len(pis))
+	}
+	// The chain rejects a no-trade batch whose tradesRoot/ordersRoot is neither
+	// empty nor the sentinel, so clear P3's SHA-256 empty-roots here.
+	input.BatchCommitments.TradesRoot = ""
+	input.BatchCommitments.OrdersRoot = ""
+	return input, nil
+}
+
 // buildSubmitBatchProofFlags renders the three autocli flag values for
 //
 //	obd tx zkdex submit-batch-proof \
@@ -139,7 +179,8 @@ type chainProofBundle struct {
 // the x/zkdex proto json_names exactly, so the chain parses them without
 // remapping. proofBundle is the raw bytes later written to a temp file and
 // passed to the `binary` --proof-bundle flag. Kept pure so the on-chain
-// contract can be asserted in unit tests.
+// contract can be asserted in unit tests. Emits the uniform 8-input layout the
+// chain now derives for every batch.
 func buildSubmitBatchProofFlags(input SubmitBatchInput) (settlementUpdate string, batchCommitments string, proofBundle []byte, err error) {
 	if input.SettlementUpdate.BatchID == "" {
 		return "", "", nil, fmt.Errorf("settlementUpdate.batchId is required")
@@ -147,11 +188,12 @@ func buildSubmitBatchProofFlags(input SubmitBatchInput) (settlementUpdate string
 	if input.ProofBundle.Proof == "" {
 		return "", "", nil, fmt.Errorf("proofBundle.proof is required")
 	}
-	if len(input.ProofBundle.PublicInputs) != 6 {
-		return "", "", nil, fmt.Errorf("proofBundle.publicInputs must contain 6 values")
+	normalized, nerr := normalizeCoreSubmitToEight(input)
+	if nerr != nil {
+		return "", "", nil, nerr
 	}
 
-	return buildSubmitFlags(input, 6)
+	return buildSubmitFlags(normalized, 8)
 }
 
 // buildTradeSubmitBatchProofFlags renders the same three flags for a TRADE batch
