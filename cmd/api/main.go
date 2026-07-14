@@ -281,24 +281,31 @@ func main() {
 		stateHandler.SetTradeStateProvider(realOrderService)
 		log.Printf("state trading extension wired (GET /api/state ext)")
 
-		// ZK-T10 — REAL gazk trade prover. When TRADE_PROVER_MODE=remote, settle
-		// through A's gazk /prove {trade} for a real Groth16 proof and verify it
-		// against the real vk (/verify-trade), instead of the Wave-1 local stub.
-		// Requires gazk reachable at GAZK_TRADE_URL, started with a stable
-		// GAZK_KEY_DIR so pk/vk persist and match the vk B embeds on-chain.
-		if getenv("TRADE_PROVER_MODE", tradeProverModeLocal) == tradeProverModeRemote {
-			gazkURL := getenv("GAZK_TRADE_URL", "http://localhost:8090")
-			realOrderService.SetTradeSettlement(
-				service.NewRemoteTradeProver(gazkURL),
-				service.NewRemoteTradeVerifierSubmitter(gazkURL),
-			)
-			log.Printf("trade prove+verify via REAL gazk (ZK-T10): %s", gazkURL)
-		} else if tradeClient, ok := relayerClient.(relayer.TradeClient); ok {
-			// INT-T08 — default: submit trade batches through the relayer
-			// (MsgSubmitBatchProof with trades[] + 8 public inputs), stub prover.
-			realOrderService.SetTradeSettlement(nil, service.NewRelayerTradeSubmitter(tradeClient))
-			log.Printf("trade batch submit via relayer (mode=%s, stub prover)", relayerMode)
+		// TRD-V1.0 — trade settlement seams, prover and submitter chosen
+		// INDEPENDENTLY (resolveTradeWiring):
+		//   TRADE_PROVER_MODE = local | remote        (default local)
+		//   TRADE_SUBMIT_MODE = chain | gazk-verify | local
+		// Unset TRADE_SUBMIT_MODE preserves the two legacy combos (remote→gazk-verify
+		// = ZK-T10 loop; local→chain = INT-T08). The NEW live-settle combo is
+		// TRADE_PROVER_MODE=remote TRADE_SUBMIT_MODE=chain → REAL gazk proof SUBMITTED
+		// to the chain (RemoteTradeProver + RelayerTradeSubmitter). gazk must be
+		// reachable at GAZK_TRADE_URL with a stable GAZK_KEY_DIR so the vk matches the
+		// one B embeds on-chain.
+		tradeClient, _ := relayerClient.(relayer.TradeClient)
+		wiring := resolveTradeWiring(tradeWiringConfig{
+			proverMode:  getenv("TRADE_PROVER_MODE", tradeProverModeLocal),
+			submitMode:  getenv("TRADE_SUBMIT_MODE", ""),
+			gazkURL:     getenv("GAZK_TRADE_URL", "http://localhost:8090"),
+			tradeClient: tradeClient,
+		})
+		for _, warn := range wiring.warnings {
+			log.Printf("warning: trade settlement wiring: %s", warn)
 		}
+		if wiring.prover != nil || wiring.submitter != nil {
+			realOrderService.SetTradeSettlement(wiring.prover, wiring.submitter)
+		}
+		log.Printf("trade settlement wired: prover=%s submit=%s (gazk=%s, relayer=%s)",
+			wiring.proverDesc, wiring.submitDesc, getenv("GAZK_TRADE_URL", "http://localhost:8090"), relayerMode)
 	}
 
 	// INT-T05 — matching trigger. POST /api/order already matches synchronously on

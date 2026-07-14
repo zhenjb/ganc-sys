@@ -24,6 +24,19 @@ func sampleTradeFills() []types.Fill {
 	}
 }
 
+func sampleTradeMarkets(t *testing.T) *state.MarketRegistry {
+	t.Helper()
+	r := state.NewMarketRegistry()
+	if err := r.Register(types.Market{
+		Market: "ATOM/USDC", BaseDenom: "uatom", QuoteDenom: "uusdc",
+		TickSize: "0.1", LotSize: "1", MakerFeeBps: 50, TakerFeeBps: 100,
+		Status: types.MarketActive,
+	}); err != nil {
+		t.Fatalf("register market: %v", err)
+	}
+	return r
+}
+
 func coreInputsWithDepositAndWithdraw(t *testing.T) SettlementInputs {
 	t.Helper()
 	dest := "cosmos1destination"
@@ -51,15 +64,17 @@ func coreInputsWithDepositAndWithdraw(t *testing.T) SettlementInputs {
 func TestBuildTradeBatchMixed(t *testing.T) {
 	b := NewSettlementUpdateBuilder()
 	upd, com, err := b.BuildTradeBatch(TradeBatchInputs{
-		Core:   coreInputsWithDepositAndWithdraw(t),
-		Fills:  sampleTradeFills(),
-		Orders: sampleTradeOrders(),
+		Core:    coreInputsWithDepositAndWithdraw(t),
+		Fills:   sampleTradeFills(),
+		Orders:  sampleTradeOrders(),
+		Markets: sampleTradeMarkets(t),
 	})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
 
-	if len(upd.Deposits) != 1 || len(upd.Withdrawals) != 1 || len(upd.Trades) != 1 {
+	// TRD-D1b: one fill → two trade records (buyer + seller).
+	if len(upd.Deposits) != 1 || len(upd.Withdrawals) != 1 || len(upd.Trades) != 2 {
 		t.Fatalf("mixed batch shape wrong: %d dep, %d wd, %d trades", len(upd.Deposits), len(upd.Withdrawals), len(upd.Trades))
 	}
 	if upd.TradeBatchCommitment == "" {
@@ -85,9 +100,10 @@ func TestBuildTradeBatchMixed(t *testing.T) {
 func TestBuildTradeBatchTradeOnly(t *testing.T) {
 	b := NewSettlementUpdateBuilder()
 	upd, com, err := b.BuildTradeBatch(TradeBatchInputs{
-		Core:   SettlementInputs{OldStateRoot: "0xaaaa", NewStateRoot: "0xbbbb"},
-		Fills:  sampleTradeFills(),
-		Orders: sampleTradeOrders(),
+		Core:    SettlementInputs{OldStateRoot: "0xaaaa", NewStateRoot: "0xbbbb"},
+		Fills:   sampleTradeFills(),
+		Orders:  sampleTradeOrders(),
+		Markets: sampleTradeMarkets(t),
 	})
 	if err != nil {
 		t.Fatalf("build: %v", err)
@@ -95,8 +111,12 @@ func TestBuildTradeBatchTradeOnly(t *testing.T) {
 	if len(upd.Deposits) != 0 || len(upd.Withdrawals) != 0 {
 		t.Fatal("trade-only batch should have empty core slices")
 	}
-	if len(upd.Trades) != 1 || upd.BatchID == "" {
+	// Two records for one fill (buyer + seller).
+	if len(upd.Trades) != 2 || upd.BatchID == "" {
 		t.Fatalf("trade-only batch shape wrong: %+v", upd)
+	}
+	if upd.Trades[0].Side != "buy" || upd.Trades[1].Side != "sell" {
+		t.Fatalf("expected buyer then seller record, got %+v", upd.Trades)
 	}
 	if com.TradesRoot == "" || com.OrdersRoot == "" {
 		t.Fatal("trade roots must be set")
@@ -174,9 +194,10 @@ func TestCoreBatchJSONUnchangedByTradeExtension(t *testing.T) {
 func TestBuildPublicInputsWithTrades(t *testing.T) {
 	b := NewSettlementUpdateBuilder()
 	upd, com, err := b.BuildTradeBatch(TradeBatchInputs{
-		Core:   coreInputsWithDepositAndWithdraw(t),
-		Fills:  sampleTradeFills(),
-		Orders: sampleTradeOrders(),
+		Core:    coreInputsWithDepositAndWithdraw(t),
+		Fills:   sampleTradeFills(),
+		Orders:  sampleTradeOrders(),
+		Markets: sampleTradeMarkets(t),
 	})
 	if err != nil {
 		t.Fatalf("build: %v", err)

@@ -17,7 +17,14 @@ func sampleTradeInput() SubmitBatchInput {
 			BatchID:              "batch-7",
 			OldStateRoot:         "0xrootA",
 			NewStateRoot:         "0xrootB",
-			Trades:               []types.Fill{{TradeID: "0xt1", Market: "ATOM/USDC", Price: "100", Qty: "20", Buyer: "cosmos1alice", Seller: "cosmos1bob"}},
+			Trades: []types.SettlementTrade{
+				{TradeID: "0xt1-buy", Market: "ATOM/USDC", MakerOrderID: "0xmk", TakerOrderID: "0xtk",
+					OrderHash: "0xmk", OrderNullifier: "0xnullbuy", Owner: "cosmos1alice", Denom: "uatom", Side: "buy",
+					Amount: "20", Price: "100", BaseQty: "20", QuoteQty: "2000", MakerFee: "10", TakerFee: "20"},
+				{TradeID: "0xt1-sell", Market: "ATOM/USDC", MakerOrderID: "0xmk", TakerOrderID: "0xtk",
+					OrderHash: "0xtk", OrderNullifier: "0xnullsell", Owner: "cosmos1bob", Denom: "uatom", Side: "sell",
+					Amount: "20", Price: "100", BaseQty: "20", QuoteQty: "2000", MakerFee: "10", TakerFee: "20"},
+			},
 			TradeBatchCommitment: "0xtbc",
 		},
 		BatchCommitments: types.BatchCommitments{
@@ -49,9 +56,21 @@ func TestBuildTradeFlagsRequires8Inputs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build trade flags: %v", err)
 	}
-	// settlementUpdate JSON must carry trades[]; batchCommitments the trade roots.
-	if !strings.Contains(su, "\"trades\"") || !strings.Contains(su, "0xt1") {
-		t.Fatalf("settlementUpdate missing trades[]: %s", su)
+	// settlementUpdate JSON must carry trades[] as chain-shaped SettlementTrade
+	// (TRD-D2): camelCase keys + both order nullifiers (two-per-fill, AGR-2b).
+	for _, want := range []string{
+		`"trades"`, `"tradeId"`, `"orderNullifier"`, `"owner"`, `"side"`, `"baseQty"`, `"quoteQty"`,
+		"0xt1-buy", "0xt1-sell", "0xnullbuy", "0xnullsell",
+	} {
+		if !strings.Contains(su, want) {
+			t.Fatalf("settlementUpdate missing %q: %s", want, su)
+		}
+	}
+	// A raw Fill would leak Fill-only keys — the chain cannot parse those as Trade.
+	for _, leak := range []string{"makerOrderHash", "takerOrderHash", `"buyer"`, `"seller"`} {
+		if strings.Contains(su, leak) {
+			t.Fatalf("settlementUpdate leaked Fill key %q (must be Trade-shaped): %s", leak, su)
+		}
 	}
 	if !strings.Contains(bc, "0xtrades") || !strings.Contains(bc, "0xorders") {
 		t.Fatalf("batchCommitments missing trade roots: %s", bc)

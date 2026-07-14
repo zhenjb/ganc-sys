@@ -49,6 +49,10 @@ type TradeBatchInputs struct {
 	Core   SettlementInputs
 	Fills  []types.Fill
 	Orders []state.OrderCommitmentInput
+	// Markets is the off-chain market registry, used by BuildSettlementTrades to
+	// resolve each fill's base denom when projecting Fill → chain-facing
+	// SettlementTrade (TRD-D2). Required when Fills is non-empty.
+	Markets *state.MarketRegistry
 }
 
 // BuildTradeBatch assembles a SettlementUpdate (with trades[] +
@@ -82,8 +86,8 @@ func (b *SettlementUpdateBuilder) BuildTradeBatch(in TradeBatchInputs) (types.Se
 		return types.SettlementUpdate{}, types.BatchCommitments{}, fmt.Errorf("%w: empty batch (no deposits, withdrawals or trades)", ErrInvalidSettlementInputs)
 	}
 
-	trades, err := validateFills(in.Fills)
-	if err != nil {
+	// Fill-level defense (STATE-T05 fields present, fees non-negative, maker≠taker).
+	if _, err := validateFills(in.Fills); err != nil {
 		return types.SettlementUpdate{}, types.BatchCommitments{}, err
 	}
 
@@ -91,6 +95,14 @@ func (b *SettlementUpdateBuilder) BuildTradeBatch(in TradeBatchInputs) (types.Se
 	// filled status; tradesRoot binds the fill sequence. Duplicate order
 	// nullifier is caught here.
 	tc, err := state.BuildTradeCommitments(in.Orders, in.Fills)
+	if err != nil {
+		return types.SettlementUpdate{}, types.BatchCommitments{}, fmt.Errorf("%w: %v", ErrInvalidSettlementInputs, err)
+	}
+
+	// TRD-D2: project each Fill → the chain-facing SettlementTrade records the
+	// relayer submits (two per fill, buyer + seller — AGR-2b). This is what rides
+	// in SettlementUpdate.Trades; the raw Fills only feed tradesRoot + witness.
+	settlementTrades, err := state.BuildSettlementTrades(in.Fills, in.Orders, in.Markets)
 	if err != nil {
 		return types.SettlementUpdate{}, types.BatchCommitments{}, fmt.Errorf("%w: %v", ErrInvalidSettlementInputs, err)
 	}
@@ -117,7 +129,7 @@ func (b *SettlementUpdateBuilder) BuildTradeBatch(in TradeBatchInputs) (types.Se
 	}
 
 	// Append the trade portion.
-	upd.Trades = trades
+	upd.Trades = settlementTrades
 	upd.TradeBatchCommitment = TradeBatchCommitment(tc.TradesRoot, tc.OrdersRoot)
 
 	// Commitments: core 4 roots (unchanged) + appended trade roots.

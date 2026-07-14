@@ -119,9 +119,10 @@ func (s *RealOrderService) settleMarket(ctx context.Context, market types.Market
 	}
 
 	upd, com, berr := s.builder.BuildTradeBatch(batch.TradeBatchInputs{
-		Core:   batch.SettlementInputs{OldStateRoot: oldRoot, NewStateRoot: res.NewRoot},
-		Fills:  fills,
-		Orders: commit,
+		Core:    batch.SettlementInputs{OldStateRoot: oldRoot, NewStateRoot: res.NewRoot},
+		Fills:   fills,
+		Orders:  commit,
+		Markets: s.markets,
 	})
 	if berr != nil {
 		return rollbackRequeue(berr, "build")

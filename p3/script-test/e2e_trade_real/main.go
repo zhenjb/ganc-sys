@@ -9,11 +9,12 @@
 // started with a stable GAZK_KEY_DIR (so pk/vk persist). The wrapper script
 // scripts/e2e_trade_real_proof.sh starts gazk, runs this, and stops it.
 //
-// v0/v1: the real proof commits gazk's field-native v1 (MiMC) roots as its 8
-// public inputs; the P4 off-chain manager keeps its v0 (SHA-256) roots. Balances
-// transition identically (only the prove/submit seam changed) — the proof is the
-// real ZK artifact. Byte-exact P4↔chain root composition awaits the v0→v1
-// migration (zk_trade_io.md §10).
+// v0 roots (TRD-A1): the real proof now commits P4's v0 (SHA-256) WIRE roots as its
+// 8 public inputs — the circuit binds them opaquely (ToBinary) instead of recomputing
+// v1 MiMC. So proofBundle.PublicInputs == BuildPublicInputsWithTrades(upd, com)
+// byte-exact, and the submitter re-binds P4's v0 roots against the proof (the same
+// consistency the chain verifier enforces) before the crypto check. Byte-exact
+// P4↔chain root composition now HOLDS end-to-end.
 //
 //	GAZK_TRADE_URL=http://localhost:8090 go run ./p3/script-test/e2e_trade_real
 package main
@@ -31,6 +32,7 @@ import (
 
 	"github.com/zhenjb/ganc-sys/internal/api"
 	"github.com/zhenjb/ganc-sys/internal/handler"
+	"github.com/zhenjb/ganc-sys/internal/relayer"
 	"github.com/zhenjb/ganc-sys/internal/repository"
 	"github.com/zhenjb/ganc-sys/internal/service"
 	"github.com/zhenjb/ganc-sys/internal/state"
@@ -68,11 +70,22 @@ func main() {
 	if err != nil {
 		fail("build order service: %v", err)
 	}
-	// ZK-T10: REAL gazk prover + verifier instead of the local stub.
-	svc.SetTradeSettlement(
-		service.NewRemoteTradeProver(gazkURL),
-		service.NewRemoteTradeVerifierSubmitter(gazkURL),
-	)
+	// REAL gazk prover. The submitter is env-selected (TRD-V1.0):
+	//   default / "gazk-verify" → RemoteTradeVerifierSubmitter (ZK-T10 prove→verify loop)
+	//   "chain"                 → RelayerTradeSubmitter(LocalClient) — proves the SAME
+	//     real gazk proof flows into the CHAIN-SUBMIT path and is accepted (the local
+	//     client enforces the 8-input + root binding the chain checks). This is the
+	//     local proxy for TRD-V1: a real v0 proof reaching MsgSubmitBatchProof.
+	submitMode := envOr("TRADE_SUBMIT_MODE", "gazk-verify")
+	var submitter service.TradeSubmitter
+	switch submitMode {
+	case "chain":
+		submitter = service.NewRelayerTradeSubmitter(relayer.NewLocalClient())
+	default:
+		submitter = service.NewRemoteTradeVerifierSubmitter(gazkURL)
+	}
+	svc.SetTradeSettlement(service.NewRemoteTradeProver(gazkURL), submitter)
+	fmt.Printf("  trade submit mode: %s\n", submitMode)
 
 	stateHandler := handler.NewStateHandler(service.NewStateService(repository.NewStateRepository(store.NewMemoryStore())))
 	stateHandler.SetTradeStateProvider(svc)
@@ -100,8 +113,12 @@ func main() {
 	assertAcct(mgr, alice, quote, "2980", "2020")
 	assertAcct(mgr, bob, base, "30", "20")
 
-	// --- Settle through the REAL gazk prover + verifier. ---
-	stage(4, "SETTLE — build → prove(gazk REAL) → verify(gazk REAL vk)")
+	// --- Settle through the REAL gazk prover; submitter per mode. ---
+	settleStep := "prove(gazk REAL) → verify(gazk REAL vk)"
+	if submitMode == "chain" {
+		settleStep = "prove(gazk REAL) → submit CHAIN-path (relayer, 8-input v0 accepted)"
+	}
+	stage(4, "SETTLE — build → "+settleStep)
 	rootBefore := mgr.Root()
 	start := time.Now()
 	settled, err := svc.SettleTradesOnce(context.Background())
@@ -109,7 +126,7 @@ func main() {
 		fail("settle with real gazk proof: %v", err)
 	}
 	assert(settled, "expected a batch to settle")
-	fmt.Printf("   settled ✓ in %v  (real Groth16 proof produced + verified by gazk)\n", time.Since(start).Round(time.Millisecond))
+	fmt.Printf("   settled ✓ in %v  (real Groth16 proof; submit mode=%s)\n", time.Since(start).Round(time.Millisecond), submitMode)
 	assert(rootBefore != mgr.Root(), "state root must advance after settle")
 
 	// --- Final balances — identical to INT-T09 (only the prover/verifier changed). ---

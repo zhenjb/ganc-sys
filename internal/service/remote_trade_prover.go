@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zhenjb/ganc-sys/internal/batch"
 	"github.com/zhenjb/ganc-sys/internal/state"
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
@@ -20,13 +21,14 @@ import (
 // vk (vkId gazk-trade-v1). They plug in via SetTradeSettlement without touching
 // the settle orchestration (INT-T06).
 //
-// v0/v1 note. gazk's trade circuit commits the FIELD-NATIVE v1 (MiMC) roots as
-// its 8 public inputs — these DIFFER from the P4 pipeline's v0 (SHA-256) roots.
-// So the returned proofBundle.PublicInputs are the v1 values gazk computed, and
-// the submitter verifies the proof against THOSE (the real crypto check), rather
-// than re-binding P4's v0 roots (which the LocalTradeSubmitter does). Byte-exact
-// P4↔chain root composition awaits the v0→v1 migration (zk_trade_io.md §10); this
-// path proves the real prove→verify ZK loop end-to-end today.
+// v0 root note (TRD-A1). gazk's trade circuit now BINDS the v0 (SHA-256) WIRE roots
+// as its 8 public inputs — the SAME values this P4 pipeline computes and the chain
+// re-derives — instead of the old field-native v1 (MiMC) roots. So the returned
+// proofBundle.PublicInputs equal BuildPublicInputsWithTrades(upd, com) byte-exact, and
+// the submitter re-binds P4's v0 roots against them (the exact consistency the chain
+// verifier enforces) before the real crypto check. The prover passes the v0 state
+// roots ([0]/[1]) + core sentinels ([2..5]) in the request so gazk binds P4's exact
+// wire values; gazk re-derives [6]/[7] from orders[]/fills[] (byte-exact P3).
 //
 // The gazk trade circuit is the fixed canonical prototype (2 orders + 1 fill), so
 // these seams handle the single-fill/two-order batch and return a clear error for
@@ -52,7 +54,7 @@ func NewRemoteTradeProver(baseURL string) *RemoteTradeProver {
 var _ TradeProver = (*RemoteTradeProver)(nil)
 
 func (p *RemoteTradeProver) ProveTrade(ctx context.Context, upd types.SettlementUpdate, com types.BatchCommitments, witness types.Witness, publicInputs []string) (types.ProofBundle, error) {
-	tradeReq, err := buildGazkTradeRequest(witness)
+	tradeReq, err := buildGazkTradeRequest(witness, publicInputs)
 	if err != nil {
 		return types.ProofBundle{}, fmt.Errorf("remote trade prover: %w", err)
 	}
@@ -100,6 +102,22 @@ func (s *RemoteTradeVerifierSubmitter) SubmitTrade(ctx context.Context, upd type
 		return "", false, fmt.Errorf("remote trade submitter: proofBundle is required")
 	}
 
+	// TRD-A1 reconciliation: gazk now binds P4's v0 wire roots, so the proof's public
+	// inputs MUST equal the batch's independently-rebuilt v0 vector (the exact check
+	// the chain verifier runs). A mismatch means a v0/v1 or layout drift — fail closed.
+	expected, berr := batch.BuildPublicInputsWithTrades(upd, com)
+	if berr != nil {
+		return "", false, fmt.Errorf("remote trade submitter: rebuild public inputs: %w", berr)
+	}
+	if len(proof.PublicInputs) != len(expected) {
+		return "", false, fmt.Errorf("remote trade submitter: proof has %d public inputs, want %d", len(proof.PublicInputs), len(expected))
+	}
+	for i := range expected {
+		if proof.PublicInputs[i] != expected[i] {
+			return "", false, fmt.Errorf("remote trade submitter: public input %d mismatch (%q != v0 %q)", i, proof.PublicInputs[i], expected[i])
+		}
+	}
+
 	req := gazkVerifyRequest{
 		SettlementUpdate: gazkSettlementUpdate{
 			BatchID:      upd.BatchID,
@@ -135,10 +153,13 @@ func (s *RemoteTradeVerifierSubmitter) SubmitTrade(ctx context.Context, upd type
 // witness → gazk trade request mapping (canonical single-fill batch).
 // ---------------------------------------------------------------------------
 
-func buildGazkTradeRequest(witness types.Witness) (*gazkTradeProveRequest, error) {
+func buildGazkTradeRequest(witness types.Witness, publicInputs []string) (*gazkTradeProveRequest, error) {
 	tw := witness.Trade
 	if tw == nil {
 		return nil, fmt.Errorf("trade witness is nil")
+	}
+	if len(publicInputs) < 8 {
+		return nil, fmt.Errorf("expected 8 v0 public inputs, got %d", len(publicInputs))
 	}
 	if len(tw.Fills) != 1 {
 		return nil, fmt.Errorf("gazk trade circuit is the canonical prototype (1 fill), got %d", len(tw.Fills))
@@ -224,6 +245,18 @@ func buildGazkTradeRequest(witness types.Witness) (*gazkTradeProveRequest, error
 			{Owner: fill.Seller, Denom: quoteDenom, OldBalance: sellerOldQuote, DeltaIn: sellerQuoteIn.String(), DeltaOut: "0"},
 			{Owner: state.FeeAccountOwner, Denom: quoteDenom, OldBalance: feeOldQuote, DeltaIn: feeTotal.String(), DeltaOut: "0"},
 		},
+		// TRD-A1: bind P4's exact v0 wire roots. P4 is the authoritative root deriver
+		// (it owns the leaf sort order — Sequence — which the witness does not carry),
+		// so it supplies ALL 8 roots and gazk binds them verbatim. The proof then commits
+		// the same 8 values the chain re-derives independently (byte-exact reconciliation).
+		OldStateRoot:        publicInputs[0],
+		NewStateRoot:        publicInputs[1],
+		DepositsRoot:        publicInputs[2],
+		WithdrawalsRoot:     publicInputs[3],
+		NullifiersRoot:      publicInputs[4],
+		WithdrawOutputsRoot: publicInputs[5],
+		TradesRoot:          publicInputs[6],
+		OrdersRoot:          publicInputs[7],
 	}
 	return req, nil
 }
@@ -349,10 +382,14 @@ type gazkTradeProveRequest struct {
 	MakerIsBid          bool                  `json:"makerIsBid"`
 	Conservation        gazkTradeConservation `json:"conservation"`
 	Cells               []gazkTradeCell       `json:"cells"`
+	OldStateRoot        string                `json:"oldStateRoot,omitempty"`
+	NewStateRoot        string                `json:"newStateRoot,omitempty"`
 	DepositsRoot        string                `json:"depositsRoot,omitempty"`
 	WithdrawalsRoot     string                `json:"withdrawalsRoot,omitempty"`
 	NullifiersRoot      string                `json:"nullifiersRoot,omitempty"`
 	WithdrawOutputsRoot string                `json:"withdrawOutputsRoot,omitempty"`
+	TradesRoot          string                `json:"tradesRoot,omitempty"`
+	OrdersRoot          string                `json:"ordersRoot,omitempty"`
 }
 
 type gazkTradeOrder struct {

@@ -47,9 +47,13 @@ type SettlementUpdate struct {
 	// withdrawals AND trades in one MsgSubmitBatchProof (the chain commits only
 	// the state-root transition for trades — no x/bank message per trade).
 	//
-	//   - Trades: the matched fills (STATE-T05), in matching order.
+	//   - Trades: the chain-facing SettlementTrade records (TRD-D1/D1b), built from
+	//     the matched fills by state.BuildSettlementTrades. Two records per fill
+	//     (buyer + seller, AGR-2b) so the chain marks BOTH order nullifiers used.
+	//     The JSON is Trade-shaped (camelCase) so the x/zkdex chain deserializes it
+	//     directly — a raw Fill would NOT parse as an on-chain Trade.
 	//   - TradeBatchCommitment: single scalar binding tradesRoot+ordersRoot
 	//     (STATE-T07) for this batch — see batch.TradeBatchCommitment.
-	Trades               []Fill `json:"trades,omitempty"`
-	TradeBatchCommitment string `json:"tradeBatchCommitment,omitempty"`
+	Trades               []SettlementTrade `json:"trades,omitempty"`
+	TradeBatchCommitment string            `json:"tradeBatchCommitment,omitempty"`
 }
