@@ -12,6 +12,7 @@
 #
 # Usage (Codespace / Git Bash):  bash scripts/real_db_mode_up.sh
 # Env overrides: DATABASE_URL, CHAIN_NODE, CHAIN_REST_URL, GAZK_URL, API_PORT,
+#                GAZK_KEY_DIR, TRADE_PROVER_MODE, TRADE_SUBMIT_MODE,
 #                RELAYER_FROM, ASSET_DENOM, START_GAZK, CHAIN_FEES.
 # ---------------------------------------------------------------------------
 set -uo pipefail
@@ -37,6 +38,21 @@ CHAIN_FEES="${CHAIN_FEES:-0USDT}"
 EXPECTED_VK_ID="${EXPECTED_VK_ID:-gazk-balance-smoke-v1}"
 CORS_ALLOWED_ORIGINS="${CORS_ALLOWED_ORIGINS:-https://*.app.github.dev,http://localhost:3000}"
 START_GAZK="${START_GAZK:-1}"
+
+# TRD-A2/TRD-SYNC — gazk MUST prove with the PERSISTED key whose vk is embedded
+# on-chain as GazkTradeV1VerifyingKeyHex. An unset GAZK_KEY_DIR makes gazk run a
+# fresh groth16.Setup on every start, SILENTLY (gazk prover/key_store.go), so the
+# proof never verifies on-chain and nothing warns you. Same default as
+# scripts/export_trade_vk.sh, so the vk exported for B matches the pk used here.
+GAZK_KEY_DIR="${GAZK_KEY_DIR:-$GANC_SYS_DIR/.gazk-keys}"
+
+# TRD-V1.0 — trade prover and submitter are chosen INDEPENDENTLY. Real mode wants
+# a REAL gazk proof SUBMITTED to the chain. Left unset these resolve to local-stub
+# prover + chain submit (cmd/api/trade_settlement_wiring.go), i.e. a FAKE proof
+# against the REAL on-chain verifier (TRD-B3) — always rejected.
+TRADE_PROVER_MODE="${TRADE_PROVER_MODE:-remote}"
+TRADE_SUBMIT_MODE="${TRADE_SUBMIT_MODE:-chain}"
+GAZK_TRADE_URL="${GAZK_TRADE_URL:-$GAZK_URL}"
 
 # DEN-D1/DEN-D2: order-market registry seed. When BOTH are empty the backend uses
 # its built-in DefaultMarkets (uatom/uusdc/uosmo). To trade on a chain that funds
@@ -138,8 +154,10 @@ ALICE_ADDR="$("$CHAIN_BINARY" keys show "$RELAYER_FROM" -a --keyring-backend "$C
 phase "gazk (:$GAZK_PORT)"
 if curl -sf "$GAZK_URL/health" >/dev/null 2>&1; then
   ok "gazk already up"
+  warn "gazk was ALREADY running — this script cannot verify its key dir."
+  warn "  It must be GAZK_KEY_DIR=$GAZK_KEY_DIR, else the trade proof will NOT verify on-chain."
 elif [ "$START_GAZK" = "1" ] && [ -d "$GAZK_DIR" ]; then
-  ( cd "$GAZK_DIR" && GAZK_ADDR=":$GAZK_PORT" go run main.go server >/tmp/gazk.real.log 2>&1 ) &
+  ( cd "$GAZK_DIR" && GAZK_KEY_DIR="$GAZK_KEY_DIR" GAZK_ADDR=":$GAZK_PORT" go run main.go server >/tmp/gazk.real.log 2>&1 ) &
   STARTED_GAZK=1
   wait_http "$GAZK_URL/health" 120 || die "gazk did not become healthy (see /tmp/gazk.real.log)"
   ok "gazk started"
@@ -180,6 +198,8 @@ fi
   PROVER_MODE=remote PROVER_URL="$GAZK_URL" \
   PROOF_VERIFY_ENABLED=true \
   PROOF_VERIFICATION_KEY_ID="$EXPECTED_VK_ID" PROOF_HASH_MODE=v0-sha256 PROOF_PREFLIGHT_STRICT=true \
+  TRADE_PROVER_MODE="$TRADE_PROVER_MODE" TRADE_SUBMIT_MODE="$TRADE_SUBMIT_MODE" \
+  GAZK_TRADE_URL="$GAZK_TRADE_URL" \
   RELAYER_MODE=cosmos CHAIN_DEPOSIT_MODE=cosmos INDEXER_MODE=chain CHAIN_QUERY_MODE=cosmos \
   CHAIN_BINARY="$CHAIN_BINARY" CHAIN_ID="$CHAIN_ID" \
   CHAIN_NODE="$CHAIN_NODE" CHAIN_RPC_URL="$CHAIN_RPC_URL" CHAIN_REST_URL="$CHAIN_REST_URL" \
@@ -222,7 +242,8 @@ else MARKETS_SRC="default (uatom/uusdc, uosmo/uusdc)"; fi
 phase "READY (DB mode)"
 cat <<EOF
   API      : $API_BASE_URL
-  gazk     : $GAZK_URL   (vkId=$GOT_VK)
+  gazk     : $GAZK_URL   (vkId=$GOT_VK, keyDir=$GAZK_KEY_DIR)
+  trade    : prover=$TRADE_PROVER_MODE submit=$TRADE_SUBMIT_MODE   (TRD-V1: remote+chain = real gazk proof -> chain)
   chain    : RPC $CHAIN_RPC_URL | REST $CHAIN_REST_URL | chain-id $CHAIN_ID
   db       : $DATABASE_URL
   stores   : postgres (withdraw/batch/proof/submit) + offchain pending queue
