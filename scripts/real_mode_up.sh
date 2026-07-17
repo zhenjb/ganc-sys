@@ -38,7 +38,7 @@ RELAYER_FROM="${RELAYER_FROM:-alice}"
 CHAIN_KEYRING_BACKEND="${CHAIN_KEYRING_BACKEND:-test}"
 ASSET_DENOM="${ASSET_DENOM:-USDT}"
 CHAIN_FEES="${CHAIN_FEES:-0USDT}"
-EXPECTED_VK_ID="${EXPECTED_VK_ID:-gazk-balance-smoke-v1}"
+EXPECTED_VK_ID="${EXPECTED_VK_ID:-gazk-trade-v1}"  # TRD-UNIFY: mọi batch dùng circuit thật gazk-trade-v1
 CORS_ALLOWED_ORIGINS="${CORS_ALLOWED_ORIGINS:-https://*.app.github.dev,http://localhost:3000}"
 START_GAZK="${START_GAZK:-1}"
 
@@ -99,7 +99,7 @@ elif [ "$START_GAZK" = "1" ] && [ -d "$GAZK_DIR" ]; then
 else
   die "gazk not up and START_GAZK!=1 (or gazk dir missing)"
 fi
-GOT_VK="$(curl -s "$GAZK_URL/health" | python -c "import sys,json;print(json.load(sys.stdin)['verificationKeyId'])" 2>/dev/null)"
+GOT_VK="$(curl -s "$GAZK_URL/health" | python -c "import sys,json;d=json.load(sys.stdin);print(d.get('tradeVerificationKeyId') or d.get('verificationKeyId',''))" 2>/dev/null)"
 [ "$GOT_VK" = "$EXPECTED_VK_ID" ] && ok "gazk vkId=$GOT_VK" || warn "gazk vkId=$GOT_VK (expected $EXPECTED_VK_ID)"
 
 phase "backend (:$API_PORT) — REAL mode (memory store)"
@@ -115,7 +115,7 @@ sleep 1
   CORS_ALLOWED_ORIGINS="$CORS_ALLOWED_ORIGINS" \
   PROVER_MODE=remote PROVER_URL="$GAZK_URL" \
   PROOF_VERIFY_ENABLED=true \
-  PROOF_VERIFICATION_KEY_ID="$EXPECTED_VK_ID" PROOF_HASH_MODE=v0-sha256 PROOF_PREFLIGHT_STRICT=true \
+  PROOF_VERIFICATION_KEY_ID="$EXPECTED_VK_ID" PROOF_HASH_MODE="" PROOF_PREFLIGHT_STRICT=true \
   TRADE_PROVER_MODE="$TRADE_PROVER_MODE" TRADE_SUBMIT_MODE="$TRADE_SUBMIT_MODE" \
   GAZK_TRADE_URL="$GAZK_TRADE_URL" \
   RELAYER_MODE=cosmos CHAIN_DEPOSIT_MODE=cosmos INDEXER_MODE=chain CHAIN_QUERY_MODE=cosmos \

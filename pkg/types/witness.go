@@ -10,6 +10,13 @@ type WitnessAccount struct {
 	Nonce      string `json:"nonce"`
 	OldBalance string `json:"oldBalance"`
 	NewBalance string `json:"newBalance"`
+
+	// Denom là micro-denom của (Owner, Denom) mà account này đại diện. APPEND-ONLY
+	// + omitempty (TRD-UNIFY): witness cũ (không có denom) serialize byte-identical,
+	// nên vector/schema cũ không đổi. Cần cho đường core-as-trade để dựng state cell
+	// (owner, denom, oldBalance, delta) đưa vào circuit thống nhất gazk-trade-v1 —
+	// thay circuit balance-smoke placeholder. Xem internal/service/core_as_trade_prover.go.
+	Denom string `json:"denom,omitempty"`
 }
 
 // Witness là batch-shaped private witness P2 prover tiêu thụ theo schema

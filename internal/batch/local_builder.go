@@ -244,6 +244,7 @@ func (b *LocalBuilder) Build(ctx context.Context, in BuildInput) (BuildOutput, e
 			UserSecret: resolveSecret(secrets, p.owner),
 			OldBalance: "0",
 			NewBalance: acc.Balance,
+			Denom:      p.denom,
 		})
 	}
 

@@ -32,6 +32,10 @@ type AccountWitnessSecret struct {
 	UserSecret string
 	OldBalance string
 	NewBalance string
+	// Denom của (Owner, Denom) — luồn xuống types.WitnessAccount.Denom cho
+	// đường core-as-trade (TRD-UNIFY). Optional: builder cũ để trống → witness
+	// không mang denom, byte-identical với schema trước.
+	Denom string
 }
 
 // WitnessInputs là batch-shaped input của WitnessBuilder. Tái sử dụng
@@ -200,6 +204,7 @@ func (b *WitnessBuilder) Build(in WitnessInputs) (types.Witness, error) {
 			Nonce:      nonceField,
 			OldBalance: oldBal.String(),
 			NewBalance: newBal.String(),
+			Denom:      strings.TrimSpace(acc.Denom),
 		})
 	}
 

@@ -139,6 +139,7 @@ func (b *SnapshotBuilder) Build(ctx context.Context, in BuildInput) (BuildOutput
 			UserSecret: resolveSecret(secrets, p.owner),
 			OldBalance: oldAccount.Balance,
 			NewBalance: newAccount.Balance,
+			Denom:      p.denom,
 		})
 	}
 

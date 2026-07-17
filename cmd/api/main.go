@@ -545,6 +545,14 @@ func startDepositPoller(depositIndexer *indexer.DepositIndexer) {
 func newProverClient(mode string, remoteURL string) prover.Client {
 	switch mode {
 	case "remote":
+		// TRD-UNIFY: prove core (deposit/withdraw) batches with the ONE real unified
+		// circuit gazk-trade-v1 (CoreAsTradeProver) instead of the retired 6-input
+		// balance-smoke placeholder. On-chain nothing changes — the chain already
+		// verifies gazk-trade-v1 for every batch.
+		return service.NewCoreAsTradeProver(remoteURL)
+	case "remote-smoke":
+		// Legacy pre-UNIFY 6-input balance-smoke prover. Kept only for rollback /
+		// A-B comparison; the chain's real verifier rejects its vkId.
 		return prover.NewRemoteClient(remoteURL)
 	case "local":
 		return prover.NewLocalClient()
