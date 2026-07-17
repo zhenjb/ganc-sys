@@ -108,7 +108,7 @@ func (s *BatchService) guardProofContract(req types.SubmitBatchRequestBody) erro
 		)
 	}
 
-	expectedInputs, err := batchbuilder.BuildPublicInputs(req.SettlementUpdate, req.BatchCommitments)
+	expectedInputs, err := expectedProofPublicInputs(req)
 	if err != nil {
 		return fmt.Errorf("%w: derive public inputs: %v", ErrProofVerificationFailed, err)
 	}
@@ -135,6 +135,29 @@ func (s *BatchService) guardProofContract(req types.SubmitBatchRequestBody) erro
 	}
 
 	return nil
+}
+
+// expectedProofPublicInputs derives the public-input vector the proof MUST commit
+// to, matching whichever layout the proof carries (TRD-UNIFY):
+//   - 6 inputs: the legacy core circuit ([0..5]).
+//   - 8 inputs: the unified circuit gazk-trade-v1 — [0..5] plus [6]/[7]. For a
+//     no-trade batch [6]/[7] are the all-zeros sentinel the chain forces in
+//     derivePublicInputs (and the relayer forces in normalizeCoreSubmitToEight),
+//     NOT the SHA-256 empty roots BuildPublicInputsWithTrades uses; a batch that
+//     carries trades keeps its real tradesRoot/ordersRoot.
+func expectedProofPublicInputs(req types.SubmitBatchRequestBody) ([]string, error) {
+	if len(req.ProofBundle.PublicInputs) == batchbuilder.PublicInputCountWithTrades {
+		full, err := batchbuilder.BuildPublicInputsWithTrades(req.SettlementUpdate, req.BatchCommitments)
+		if err != nil {
+			return nil, err
+		}
+		if len(req.SettlementUpdate.Trades) == 0 {
+			full[batchbuilder.PublicInputIdxTradesRoot] = coreEmptyTradeRootSentinel
+			full[batchbuilder.PublicInputIdxOrdersRoot] = coreEmptyTradeRootSentinel
+		}
+		return full, nil
+	}
+	return batchbuilder.BuildPublicInputs(req.SettlementUpdate, req.BatchCommitments)
 }
 
 // SetStateRollback wires the off-chain state manager so a rejected batch submit

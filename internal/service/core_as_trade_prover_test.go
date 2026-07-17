@@ -210,3 +210,50 @@ func TestCoreAsTradeProverVerifyAndArtifact(t *testing.T) {
 		t.Fatalf("artifact wrong: %+v", art)
 	}
 }
+
+// TRD-UNIFY: guardProofContract must accept an 8-input unified core proof, with
+// [6]/[7] = chain sentinel for a no-trade batch (regression for the live
+// "publicInputs length 8 != expected 6" bug).
+func TestExpectedProofPublicInputsUnifiedCore(t *testing.T) {
+	in := coreInput()
+	_, pis, err := buildCoreAsTradeRequest(in)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req := types.SubmitBatchRequestBody{
+		SettlementUpdate: in.SettlementUpdate,
+		BatchCommitments: in.BatchCommitments,
+		ProofBundle:      types.ProofBundle{PublicInputs: pis},
+	}
+	got, err := expectedProofPublicInputs(req)
+	if err != nil {
+		t.Fatalf("expectedProofPublicInputs: %v", err)
+	}
+	if len(got) != batch.PublicInputCountWithTrades {
+		t.Fatalf("len = %d, want 8", len(got))
+	}
+	for i := range pis {
+		if got[i] != pis[i] {
+			t.Fatalf("expected[%d]=%q != proof %q", i, got[i], pis[i])
+		}
+	}
+	if got[6] != coreEmptyTradeRootSentinel || got[7] != coreEmptyTradeRootSentinel {
+		t.Fatalf("trade roots not chain sentinel: [6]=%s [7]=%s", got[6], got[7])
+	}
+}
+
+func TestExpectedProofPublicInputsLegacyCore(t *testing.T) {
+	in := coreInput()
+	req := types.SubmitBatchRequestBody{
+		SettlementUpdate: in.SettlementUpdate,
+		BatchCommitments: in.BatchCommitments,
+		ProofBundle:      types.ProofBundle{PublicInputs: make([]string, batch.PublicInputCount)}, // 6
+	}
+	got, err := expectedProofPublicInputs(req)
+	if err != nil {
+		t.Fatalf("expectedProofPublicInputs: %v", err)
+	}
+	if len(got) != batch.PublicInputCount {
+		t.Fatalf("len = %d, want 6 (legacy layout)", len(got))
+	}
+}
