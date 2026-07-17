@@ -64,10 +64,43 @@ type SettlementInputs struct {
 type SettlementUpdateBuilder struct {
 	mu  sync.Mutex
 	seq uint64
+	// prefix là namespace của BatchID ("batch-", "core-", "trade-"). INT-2SEQ:
+	// đường core và đường trade dùng hai builder độc lập nhưng submit vào CÙNG
+	// một namespace batchId trên chain — nếu cả hai đều phát "batch-N" thì trùng
+	// (chain reject "batchId already exists"). Mỗi đường mang một prefix riêng để
+	// hai chuỗi id tách biệt. Rỗng => DefaultBatchIDPrefix (backward-compat cho
+	// builder cũ / zero-value).
+	prefix string
 }
 
+// DefaultBatchIDPrefix là namespace mặc định khi builder không được cấp prefix
+// riêng — giữ nguyên hành vi trước INT-2SEQ ("batch-N") cho LocalBuilder và mọi
+// caller cũ/test hiện có.
+const DefaultBatchIDPrefix = "batch-"
+
 func NewSettlementUpdateBuilder() *SettlementUpdateBuilder {
-	return &SettlementUpdateBuilder{}
+	return &SettlementUpdateBuilder{prefix: DefaultBatchIDPrefix}
+}
+
+// NewSettlementUpdateBuilderWithPrefix tạo builder mint BatchID dưới namespace
+// `prefix` (vd "core-", "trade-"). Prefix rỗng rơi về DefaultBatchIDPrefix.
+// INT-2SEQ: core (SnapshotBuilder) dùng "core-", trade (RealOrderService) dùng
+// "trade-" để hai đường không đụng batchId trên chain.
+func NewSettlementUpdateBuilderWithPrefix(prefix string) *SettlementUpdateBuilder {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		prefix = DefaultBatchIDPrefix
+	}
+	return &SettlementUpdateBuilder{prefix: prefix}
+}
+
+// batchIDPrefix trả về prefix đang dùng, fallback DefaultBatchIDPrefix cho một
+// builder zero-value (được construct qua struct literal, không qua constructor).
+func (b *SettlementUpdateBuilder) batchIDPrefix() string {
+	if b.prefix == "" {
+		return DefaultBatchIDPrefix
+	}
+	return b.prefix
 }
 
 // Seq trả về số lượng SettlementUpdate đã build (debug/testing).
@@ -94,7 +127,8 @@ func (b *SettlementUpdateBuilder) Seq() uint64 {
 //     state.WithdrawAddressHash và assert equality với supplied hash.
 //
 // Post-conditions on success:
-//   - BatchID = "batch-N" với N là post-increment seq counter.
+//   - BatchID = "<prefix>N" với N là post-increment seq counter (prefix mặc
+//     định "batch-"; core dùng "core-", trade dùng "trade-" — INT-2SEQ).
 //   - Mọi amount normalize qua big.Int ("0100" → "100").
 //   - Owner/denom/destination giữ verbatim (đã trim ở STATE-03/04).
 func (b *SettlementUpdateBuilder) Build(in SettlementInputs) (types.SettlementUpdate, error) {
@@ -184,7 +218,7 @@ func (b *SettlementUpdateBuilder) Build(in SettlementInputs) (types.SettlementUp
 	b.seq++
 
 	return types.SettlementUpdate{
-		BatchID:      "batch-" + strconv.FormatUint(b.seq, 10),
+		BatchID:      b.batchIDPrefix() + strconv.FormatUint(b.seq, 10),
 		OldStateRoot: in.OldStateRoot,
 		NewStateRoot: in.NewStateRoot,
 		Deposits:     deposits,

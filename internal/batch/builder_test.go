@@ -112,6 +112,57 @@ func TestBuild_CanonicalAliceVector(t *testing.T) {
 	}
 }
 
+// INT-2SEQ: the core and trade settle paths use independent builders but submit
+// into ONE chain-side batchId namespace; a per-builder prefix keeps their id
+// streams disjoint so they never collide ("batchId already exists"). The default
+// constructor stays "batch-" (backward-compat: LocalBuilder and every existing
+// caller/test are unchanged).
+func TestBuild_BatchIDNamespacePrefix(t *testing.T) {
+	cases := []struct {
+		name    string
+		builder *batch.SettlementUpdateBuilder
+		want    string
+	}{
+		{"default", batch.NewSettlementUpdateBuilder(), "batch-1"},
+		{"core", batch.NewSettlementUpdateBuilderWithPrefix("core-"), "core-1"},
+		{"trade", batch.NewSettlementUpdateBuilderWithPrefix("trade-"), "trade-1"},
+		{"empty-falls-back", batch.NewSettlementUpdateBuilderWithPrefix("  "), "batch-1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			upd, err := tc.builder.Build(canonicalAlice(t))
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			if upd.BatchID != tc.want {
+				t.Fatalf("BatchID: want %s, got %s", tc.want, upd.BatchID)
+			}
+		})
+	}
+}
+
+// Two independent builders (as the live core vs trade paths are) must not share a
+// batchId even though each starts its own counter at 1 — the exact live collision.
+func TestBuild_CoreAndTradeNamespacesDoNotCollide(t *testing.T) {
+	core := batch.NewSettlementUpdateBuilderWithPrefix("core-")
+	trade := batch.NewSettlementUpdateBuilderWithPrefix("trade-")
+
+	coreUpd, err := core.Build(canonicalAlice(t))
+	if err != nil {
+		t.Fatalf("core Build: %v", err)
+	}
+	tradeUpd, err := trade.Build(canonicalAlice(t))
+	if err != nil {
+		t.Fatalf("trade Build: %v", err)
+	}
+	if coreUpd.BatchID == tradeUpd.BatchID {
+		t.Fatalf("core and trade minted the same batchId %q — namespaces collide", coreUpd.BatchID)
+	}
+	if coreUpd.BatchID != "core-1" || tradeUpd.BatchID != "trade-1" {
+		t.Fatalf("unexpected ids: core=%s trade=%s", coreUpd.BatchID, tradeUpd.BatchID)
+	}
+}
+
 func TestBuild_SequentialBatchIDs(t *testing.T) {
 	in := canonicalAlice(t)
 	b := batch.NewSettlementUpdateBuilder()

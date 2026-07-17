@@ -120,7 +120,7 @@ func (b *SettlementUpdateBuilder) BuildTradeBatch(in TradeBatchInputs) (types.Se
 		seq := b.seq
 		b.mu.Unlock()
 		upd = types.SettlementUpdate{
-			BatchID:      "batch-" + strconv.FormatUint(seq, 10),
+			BatchID:      b.batchIDPrefix() + strconv.FormatUint(seq, 10),
 			OldStateRoot: in.Core.OldStateRoot,
 			NewStateRoot: in.Core.NewStateRoot,
 			Deposits:     []types.SettlementDeposit{},

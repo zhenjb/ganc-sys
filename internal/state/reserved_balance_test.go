@@ -177,10 +177,15 @@ func TestManagerReserveBuyLocksQuoteSellLocksBase(t *testing.T) {
 
 // --- Root binding ------------------------------------------------------------
 
-// The state root MUST change when reserved changes, even though available+
-// reserved (the total) is conserved — otherwise a proof could spend locked
-// funds. Reserving then fully releasing must return to the original root.
-func TestReserveChangesRootAndReleaseRestoresIt(t *testing.T) {
+// INT-2SEQ / Phương án A: the settled state root must NOT change when reserving
+// or releasing collateral. Reserved funds are off-chain bookkeeping (a resting
+// order that never settles on-chain on its own), so the chain-committed root
+// binds only the settled TOTAL (available + reserved) — which Reserve/Release
+// conserve. This is what keeps the off-chain root equal to the chain's current
+// root while orders are open (the fix for the two-sequencer oldStateRoot
+// mismatch). A fill (Consume) moves the total and MUST change the root — see
+// TestConsumeChangesSettledRoot.
+func TestReserveDoesNotChangeSettledRoot(t *testing.T) {
 	m := NewOffchainStateManager()
 	seedAccount(t, m, "alice", "uusdc", "100")
 
@@ -189,9 +194,8 @@ func TestReserveChangesRootAndReleaseRestoresIt(t *testing.T) {
 	if _, err := m.Reserve("alice", "uusdc", "40", "0xorder"); err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
-	rootReserved := m.Root()
-	if rootReserved == rootBefore {
-		t.Fatal("root did not change when reserved changed — locked funds not bound into root")
+	if m.Root() != rootBefore {
+		t.Fatalf("settled root changed on reserve: got %q want %q (reserved must fold into the settled total)", m.Root(), rootBefore)
 	}
 
 	if _, err := m.ReleaseOrder("0xorder"); err != nil {
@@ -199,6 +203,27 @@ func TestReserveChangesRootAndReleaseRestoresIt(t *testing.T) {
 	}
 	if m.Root() != rootBefore {
 		t.Fatalf("root not restored after full release: got %q want %q", m.Root(), rootBefore)
+	}
+}
+
+// A fill draws locked collateral out of the account (Consume reduces reserved
+// without crediting available), so the settled total drops and the root MUST
+// advance — the counterpart to TestReserveDoesNotChangeSettledRoot. Together they
+// pin Phương án A: reserve/release are root-invariant, settlement is not.
+func TestConsumeChangesSettledRoot(t *testing.T) {
+	m := NewOffchainStateManager()
+	seedAccount(t, m, "alice", "uusdc", "100")
+
+	if _, err := m.Reserve("alice", "uusdc", "40", "0xorder"); err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	rootReserved := m.Root()
+
+	if _, err := m.ConsumeOrder("0xorder", "40"); err != nil {
+		t.Fatalf("consume: %v", err)
+	}
+	if m.Root() == rootReserved {
+		t.Fatal("settled root did not change after a fill consumed locked collateral")
 	}
 }
 

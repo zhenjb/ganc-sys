@@ -43,8 +43,10 @@ func NewSnapshotBuilder(manager *state.OffchainStateManager) *SnapshotBuilder {
 	}
 
 	return &SnapshotBuilder{
-		manager:    manager,
-		settlement: NewSettlementUpdateBuilder(),
+		manager: manager,
+		// INT-2SEQ: đường core mint batchId dưới namespace "core-" để không đụng
+		// namespace "trade-" của đường trade (RealOrderService) trên cùng chain.
+		settlement: NewSettlementUpdateBuilderWithPrefix("core-"),
 		witness:    NewWitnessBuilder(),
 	}
 }

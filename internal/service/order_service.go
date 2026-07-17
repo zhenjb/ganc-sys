@@ -342,7 +342,9 @@ func NewRealOrderService(manager *state.OffchainStateManager, markets []types.Ma
 		trades:         NewInMemoryTradeStore(),
 		engine:         state.NewMatchingEngine(),
 		queue:          NewInMemoryFillQueue(),
-		builder:        batch.NewSettlementUpdateBuilder(),
+		// INT-2SEQ: đường trade mint batchId dưới namespace "trade-" để không đụng
+		// namespace "core-" của đường core (SnapshotBuilder) trên cùng chain.
+		builder:        batch.NewSettlementUpdateBuilderWithPrefix("trade-"),
 		orderRecords:   make(map[string]orderRecord),
 		tradeProver:    NewLocalTradeProver(),
 		tradeSubmitter: NewLocalTradeSubmitter(),
