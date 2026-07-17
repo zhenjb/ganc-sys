@@ -52,10 +52,14 @@ func NewOffchainSettlementService(
 	}
 
 	return &OffchainSettlementService{
-		manager:           manager,
-		repository:        repo,
-		cursorName:        repository.DefaultOffchainSettlementCursorName,
-		settlementBuilder: appbatch.NewSettlementUpdateBuilder(),
+		manager:    manager,
+		repository: repo,
+		cursorName: repository.DefaultOffchainSettlementCursorName,
+		// INT-2SEQ: đây là đường CORE (deposit/withdraw) settle trong pending mode —
+		// nơi thực sự mint batchId khi BATCH_BUILD_SOURCE=pending (cấu hình live/DB).
+		// Mang namespace "core-" để không đụng namespace "trade-" của đường trade
+		// (RealOrderService) trên cùng chain.
+		settlementBuilder: appbatch.NewSettlementUpdateBuilderWithPrefix("core-"),
 		witnessBuilder:    appbatch.NewWitnessBuilder(),
 	}
 }

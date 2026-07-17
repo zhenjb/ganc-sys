@@ -97,6 +97,11 @@ SETTLEMENT_INTERVAL="${SETTLEMENT_INTERVAL:-8s}"
 # it). Set DETACH=1 to keep the old behaviour — start everything in the
 # background, print READY, and exit (useful for scripted e2e runs).
 DETACH="${DETACH:-0}"
+# FG=1 chạy backend Ở FOREGROUND: log đi THẲNG ra terminal này (không redirect vào
+# /tmp/api.real.log, không tail). Dùng khi muốn xem log backend realtime trực tiếp.
+# gazk vẫn chạy nền; Ctrl-C dừng backend (trap cleanup dọn cả gazk). Loại trừ với
+# DETACH (foreground không thể detach).
+FG="${FG:-0}"
 STARTED_GAZK=0
 
 c_reset=$'\033[0m'; c_blue=$'\033[1;34m'; c_green=$'\033[1;32m'; c_red=$'\033[1;31m'; c_yellow=$'\033[1;33m'
@@ -190,8 +195,10 @@ else
   warn "RESET_OFFCHAIN_DB=0 — keeping durable queue. Only correct if the chain was NOT reset."
 fi
 
-: > /tmp/api.real.log
-(
+# run_api khởi chạy backend với toàn bộ env REAL + Postgres + off-chain settlement.
+# KHÔNG tự redirect — caller quyết định: nền + ghi file (mặc định) hoặc foreground
+# (FG=1, log đi thẳng ra terminal).
+run_api() {
   cd "$GANC_SYS_DIR" && \
   PORT="$API_PORT" \
   CORS_ALLOWED_ORIGINS="$CORS_ALLOWED_ORIGINS" \
@@ -212,8 +219,33 @@ fi
   OFFCHAIN_SETTLEMENT_ENABLED=true BATCH_BUILD_SOURCE=pending \
   OFFCHAIN_GENESIS_ROOT="$OFFCHAIN_GENESIS_ROOT" \
   SETTLEMENT_WORKER_ENABLED="$SETTLEMENT_WORKER_ENABLED" SETTLEMENT_INTERVAL="$SETTLEMENT_INTERVAL" \
-  go run ./cmd/api >/tmp/api.real.log 2>&1
-) &
+  go run ./cmd/api
+}
+
+# FG=1 — backend chạy FOREGROUND: log đi thẳng ra terminal này (không file, không
+# tail). Bỏ qua auto-check marker (bạn thấy trực tiếp trong log: "real ZK
+# verification enabled via remote prover", "settlement sequencer started"). gazk
+# preflight phía trên đã xác nhận vkId. In READY gọn rồi block cho tới Ctrl-C.
+if [ "$FG" = "1" ]; then
+  phase "READY (DB mode · FOREGROUND — log realtime)"
+  cat <<EOF
+  API      : $API_BASE_URL
+  gazk     : $GAZK_URL   (vkId=$GOT_VK, keyDir=$GAZK_KEY_DIR)
+  trade    : prover=$TRADE_PROVER_MODE submit=$TRADE_SUBMIT_MODE
+  chain    : RPC $CHAIN_RPC_URL | REST $CHAIN_REST_URL | chain-id $CHAIN_ID
+  signer   : $RELAYER_FROM = $ALICE_ADDR
+  sequencer: SETTLEMENT_WORKER_ENABLED=$SETTLEMENT_WORKER_ENABLED (interval=$SETTLEMENT_INTERVAL)
+  gazk log : /tmp/gazk.real.log
+EOF
+  echo
+  echo "${c_blue}== backend log (realtime) — Ctrl-C để dừng backend (và gazk) ==${c_reset}"
+  echo
+  run_api          # block; log ra thẳng terminal; trap cleanup dọn gazk khi Ctrl-C
+  exit 0
+fi
+
+: > /tmp/api.real.log
+run_api >/tmp/api.real.log 2>&1 &
 wait_http "$API_BASE_URL/api/health" 90 || { tail -40 /tmp/api.real.log; die "backend did not start (see /tmp/api.real.log)"; }
 
 # Assert the two markers that distinguish this mode from memory mode.
