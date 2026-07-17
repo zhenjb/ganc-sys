@@ -117,10 +117,19 @@ type LocalBuilder struct {
 // NewLocalBuilder khởi tạo LocalBuilder với một SettlementUpdateBuilder
 // và WitnessBuilder mới. Trong một process, P4 nên giữ một LocalBuilder
 // xuyên suốt để BatchID seq tiếp tục đếm — tạo nhiều instance sẽ reset
-// counter và có thể clash batch-1.
+// counter và có thể clash batch-1. BatchID mang namespace mặc định "batch-".
 func NewLocalBuilder() *LocalBuilder {
+	return NewLocalBuilderWithPrefix(DefaultBatchIDPrefix)
+}
+
+// NewLocalBuilderWithPrefix khởi tạo LocalBuilder mint BatchID dưới namespace
+// `prefix`. INT-2SEQ: đường core settle (deposit/withdraw) dùng LocalBuilder khi
+// BATCH_BUILDER_MODE=local — cấu hình mặc định của live/DB mode — nên nó phải
+// mang prefix "core-" (giống SnapshotBuilder) để không đụng namespace "trade-"
+// của đường trade. Prefix rỗng rơi về DefaultBatchIDPrefix.
+func NewLocalBuilderWithPrefix(prefix string) *LocalBuilder {
 	return &LocalBuilder{
-		settlement: NewSettlementUpdateBuilder(),
+		settlement: NewSettlementUpdateBuilderWithPrefix(prefix),
 		witness:    NewWitnessBuilder(),
 	}
 }

@@ -435,14 +435,17 @@ func newBatchBuilder(
 	mode string,
 	offchainStateManager *appstate.OffchainStateManager,
 ) batch.Builder {
+	// INT-2SEQ: cả hai builder của ĐƯỜNG CORE mint batchId dưới namespace "core-"
+	// (SnapshotBuilder tự set; LocalBuilder nhận qua prefix) để không đụng namespace
+	// "trade-" của đường trade (RealOrderService) trên cùng chain.
 	switch mode {
 	case BatchBuilderModeSnapshot:
 		return batch.NewSnapshotBuilder(offchainStateManager)
 	case BatchBuilderModeLocal:
-		return batch.NewLocalBuilder()
+		return batch.NewLocalBuilderWithPrefix("core-")
 	default:
 		log.Printf("unknown BATCH_BUILDER_MODE=%q, falling back to local", mode)
-		return batch.NewLocalBuilder()
+		return batch.NewLocalBuilderWithPrefix("core-")
 	}
 }
 
