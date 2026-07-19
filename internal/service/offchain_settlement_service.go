@@ -317,6 +317,10 @@ func (s *OffchainSettlementService) BuildPendingBatch(
 	// the prefix's final rootAfter — NOT cursor.PendingRoot, which reflects the
 	// full (possibly larger) pending set.
 	boundedTransitions := boundSingleWithdrawalPrefix(orderedTransitions)
+	// INT-MULTIDENOM: a batch may now span multiple denoms, so cap it to the
+	// circuit's account-cell budget (maxCoreCells) instead of the old implicit
+	// single-denom cap. Excess (owner,denom) accounts drain in later passes.
+	boundedTransitions = boundMaxDistinctAccountsPrefix(boundedTransitions, maxCoreCells)
 	newStateRoot := boundedTransitions[len(boundedTransitions)-1].rootAfter
 
 	selectedDeposits := make(map[string]bool)
@@ -584,6 +588,40 @@ func boundSingleWithdrawalPrefix(ordered []pendingSettlementTransition) []pendin
 	return ordered
 }
 
+// boundMaxDistinctAccountsPrefix returns the longest prefix touching at most
+// `maxAccounts` distinct (owner, denom) accounts — the prefix up to (but NOT
+// including) the transition that would introduce the (maxAccounts+1)-th account.
+//
+// INT-MULTIDENOM: the unified circuit binds at most maxStateCells account cells
+// (mirrored as maxCoreCells here). A single-denom batch USED to cap cells
+// implicitly (one denom → few accounts); with multi-denom a batch gathers more
+// (owner, denom) pairs and can exceed the cell limit, which would fail
+// buildCoreCells and stall the queue. Bounding the prefix keeps every batch within
+// the cell budget; the remainder drains in later sequencer passes. Transitions
+// repeating an already-counted account are free (same cell).
+//
+// The input MUST be non-empty (the caller guarantees this).
+func boundMaxDistinctAccountsPrefix(ordered []pendingSettlementTransition, maxAccounts int) []pendingSettlementTransition {
+	if maxAccounts <= 0 {
+		return ordered
+	}
+	seen := make(map[ownerDenomWitnessKey]struct{}, maxAccounts)
+	for i, transition := range ordered {
+		key := ownerDenomWitnessKey{
+			owner: strings.TrimSpace(transition.ownerAddress),
+			denom: strings.TrimSpace(transition.denom),
+		}
+		if _, ok := seen[key]; ok {
+			continue // same cell as an already-counted account — free
+		}
+		if len(seen) == maxAccounts {
+			return ordered[:i] // this transition would introduce cell #(max+1)
+		}
+		seen[key] = struct{}{}
+	}
+	return ordered
+}
+
 func orderPendingSettlementTransitions(
 	committedRoot string,
 	deposits []repository.PendingDepositTransition,
@@ -692,6 +730,14 @@ type pendingOwnerWitnessBalance struct {
 	newBalance string
 }
 
+// ownerDenomWitnessKey nhóm witness balance theo (owner, denom). INT-MULTIDENOM:
+// một owner có thể xuất hiện với NHIỀU denom trong cùng batch — mỗi (owner,denom)
+// là một account cell riêng ở circuit gazk-trade-v1 — nên khóa phải gồm cả denom.
+type ownerDenomWitnessKey struct {
+	owner string
+	denom string
+}
+
 func buildWitnessAccountsFromPendingTransitions(
 	orderedTransitions []pendingSettlementTransition,
 	accountSecrets []appbatch.AccountSecret,
@@ -701,8 +747,8 @@ func buildWitnessAccountsFromPendingTransitions(
 		return nil, err
 	}
 
-	ownerOrder := make([]string, 0)
-	byOwner := make(map[string]pendingOwnerWitnessBalance)
+	keyOrder := make([]ownerDenomWitnessKey, 0)
+	byKey := make(map[ownerDenomWitnessKey]pendingOwnerWitnessBalance)
 
 	for _, transition := range orderedTransitions {
 		owner := strings.TrimSpace(transition.ownerAddress)
@@ -716,42 +762,40 @@ func buildWitnessAccountsFromPendingTransitions(
 			return nil, fmt.Errorf("%w: transition denom is empty", ErrInvalidPendingSettlement)
 		}
 
-		current, exists := byOwner[owner]
+		key := ownerDenomWitnessKey{owner: owner, denom: denom}
+		current, exists := byKey[key]
 		if !exists {
-			ownerOrder = append(ownerOrder, owner)
-			byOwner[owner] = pendingOwnerWitnessBalance{
-				owner: owner,
-				denom: denom,
-
+			keyOrder = append(keyOrder, key)
+			byKey[key] = pendingOwnerWitnessBalance{
+				owner:      owner,
+				denom:      denom,
 				oldBalance: transition.balanceBefore,
 				newBalance: transition.balanceAfter,
 			}
 			continue
 		}
 
-		if current.denom != denom {
-			return nil, fmt.Errorf(
-				"%w: owner %s appears with multiple denoms: %s and %s",
-				ErrInvalidPendingSettlement,
-				owner,
-				current.denom,
-				denom,
-			)
-		}
-
+		// Cùng (owner, denom) xuất hiện lại (nhiều op trên cùng account): oldBalance
+		// giữ của lần đầu, newBalance cập nhật theo transition mới nhất (chuỗi root đã
+		// sắp theo thứ tự nhân-quả). INT-MULTIDENOM: không còn reject "owner nhiều
+		// denom" — một owner giữ nhiều denom giờ hợp lệ.
 		current.newBalance = transition.balanceAfter
-		byOwner[owner] = current
+		byKey[key] = current
 	}
 
-	accounts := make([]appbatch.AccountWitnessSecret, 0, len(ownerOrder))
-	for _, owner := range ownerOrder {
-		balance := byOwner[owner]
+	accounts := make([]appbatch.AccountWitnessSecret, 0, len(keyOrder))
+	for _, key := range keyOrder {
+		balance := byKey[key]
 
 		accounts = append(accounts, appbatch.AccountWitnessSecret{
-			Owner:      owner,
-			UserSecret: resolveAccountSecret(secrets, owner),
+			Owner:      balance.owner,
+			UserSecret: resolveAccountSecret(secrets, balance.owner),
 			OldBalance: balance.oldBalance,
 			NewBalance: balance.newBalance,
+			// INT-MULTIDENOM: luồn denom xuống witness để WitnessBuilder tính
+			// sumDeposit/sumWithdraw ĐÚNG per (owner,denom) và core-as-trade dựng
+			// đúng cell denom.
+			Denom: balance.denom,
 		})
 	}
 

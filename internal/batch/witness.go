@@ -111,9 +111,18 @@ func (b *WitnessBuilder) Build(in WitnessInputs) (types.Witness, error) {
 				ErrInvalidWitnessInputs, i, acc.NewBalance, err)
 		}
 
+		// INT-MULTIDENOM: khi witness mang Denom (batch đa-denom), chỉ gộp deposit/
+		// withdraw ĐÚNG (owner, denom). Nếu không lọc, một owner giữ nhiều denom sẽ bị
+		// cộng nhầm op khác denom và vỡ bất biến ZK-04 dưới đây. Denom rỗng (schema cũ
+		// single-denom) giữ nguyên hành vi: gộp mọi op của owner (owner chỉ có 1 denom).
+		accDenom := strings.TrimSpace(acc.Denom)
+
 		sumDeposit := new(big.Int)
 		for _, d := range in.Settlement.Deposits {
 			if d.Owner != owner {
+				continue
+			}
+			if accDenom != "" && d.Denom != accDenom {
 				continue
 			}
 			amt, err := parsePositive(d.Amount)
@@ -129,6 +138,9 @@ func (b *WitnessBuilder) Build(in WitnessInputs) (types.Witness, error) {
 		var ownerWithdrawals []WithdrawalInput
 		for _, w := range in.Settlement.Withdrawals {
 			if w.Request.Owner != owner {
+				continue
+			}
+			if accDenom != "" && w.Request.Denom != accDenom {
 				continue
 			}
 			amt, err := parsePositive(w.Request.Amount)

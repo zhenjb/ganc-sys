@@ -146,22 +146,15 @@ func (b *SettlementUpdateBuilder) Build(in SettlementInputs) (types.SettlementUp
 		return types.SettlementUpdate{}, fmt.Errorf("%w: empty batch (no deposits, no withdrawals)", ErrInvalidSettlementInputs)
 	}
 
-	denom, err := pickBatchDenom(in)
-	if err != nil {
-		return types.SettlementUpdate{}, err
-	}
-
+	// INT-MULTIDENOM: một batch KHÔNG còn bị ép single-denom. Nó gom deposit/
+	// withdraw đa denom — circuit gazk-trade-v1 bind mỗi state cell một denom
+	// riêng và chain validate từng op độc lập (không đòi đồng denom). Mỗi op vẫn
+	// tự kiểm denom non-empty + amount > 0 qua validateDeposit/validateWithdraw.
 	deposits := make([]types.SettlementDeposit, 0, len(in.Deposits))
 	for i, d := range in.Deposits {
 		amt, err := validateDeposit(d)
 		if err != nil {
 			return types.SettlementUpdate{}, fmt.Errorf("%w (deposits[%d])", err, i)
-		}
-		if d.Denom != denom {
-			return types.SettlementUpdate{}, fmt.Errorf(
-				"%w: deposits[%d].denom=%q != batch denom %q (mixed-denom batches not supported in MVP)",
-				ErrInvalidSettlementInputs, i, d.Denom, denom,
-			)
 		}
 		deposits = append(deposits, types.SettlementDeposit{
 			DepositID: d.DepositID,
@@ -176,12 +169,6 @@ func (b *SettlementUpdateBuilder) Build(in SettlementInputs) (types.SettlementUp
 		amt, err := validateWithdraw(w.Request)
 		if err != nil {
 			return types.SettlementUpdate{}, fmt.Errorf("%w (withdrawals[%d])", err, i)
-		}
-		if w.Request.Denom != denom {
-			return types.SettlementUpdate{}, fmt.Errorf(
-				"%w: withdrawals[%d].denom=%q != batch denom %q (mixed-denom batches not supported in MVP)",
-				ErrInvalidSettlementInputs, i, w.Request.Denom, denom,
-			)
 		}
 		if err := validateHex(w.Nullifier, fmt.Sprintf("withdrawals[%d].nullifier", i)); err != nil {
 			return types.SettlementUpdate{}, err
@@ -224,23 +211,6 @@ func (b *SettlementUpdateBuilder) Build(in SettlementInputs) (types.SettlementUp
 		Deposits:     deposits,
 		Withdrawals:  withdrawals,
 	}, nil
-}
-
-// pickBatchDenom enforces single-denom invariant ngay từ entry đầu tiên.
-// Trả về denom chuẩn cho cả batch để các vòng validate sau so sánh.
-func pickBatchDenom(in SettlementInputs) (string, error) {
-	if len(in.Deposits) > 0 {
-		d := strings.TrimSpace(in.Deposits[0].Denom)
-		if d == "" {
-			return "", fmt.Errorf("%w: deposits[0].denom is empty", ErrInvalidSettlementInputs)
-		}
-		return d, nil
-	}
-	w := strings.TrimSpace(in.Withdrawals[0].Request.Denom)
-	if w == "" {
-		return "", fmt.Errorf("%w: withdrawals[0].denom is empty", ErrInvalidSettlementInputs)
-	}
-	return w, nil
 }
 
 func validateRoot(root, label string) error {

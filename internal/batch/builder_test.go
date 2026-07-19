@@ -227,16 +227,66 @@ func TestBuild_RejectsTamperedDestinationHash(t *testing.T) {
 	}
 }
 
-func TestBuild_RejectsMixedDenom(t *testing.T) {
+// INT-MULTIDENOM: a batch now gathers deposits/withdrawals across DIFFERENT
+// denoms (the single-denom invariant is gone — the unified circuit binds a denom
+// per cell). The canonical Alice vector with a uusdc deposit + a uatom withdrawal
+// must build, preserving each op's own denom verbatim.
+func TestBuild_AcceptsMixedDenom(t *testing.T) {
 	in := canonicalAlice(t)
 	in.Withdrawals[0].Request.Denom = "uatom"
 
-	_, err := batch.NewSettlementUpdateBuilder().Build(in)
-	if !errors.Is(err, batch.ErrInvalidSettlementInputs) {
-		t.Fatalf("want ErrInvalidSettlementInputs, got %v", err)
+	upd, err := batch.NewSettlementUpdateBuilder().Build(in)
+	if err != nil {
+		t.Fatalf("multi-denom batch should build, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "mixed-denom") {
-		t.Fatalf("error should mention mixed-denom: %v", err)
+	if len(upd.Deposits) != 1 || upd.Deposits[0].Denom != "uusdc" {
+		t.Fatalf("deposit denom not preserved: %+v", upd.Deposits)
+	}
+	if len(upd.Withdrawals) != 1 || upd.Withdrawals[0].Denom != "uatom" {
+		t.Fatalf("withdrawal denom not preserved: %+v", upd.Withdrawals)
+	}
+}
+
+// INT-MULTIDENOM: WitnessBuilder must aggregate sumDeposit/sumWithdraw PER
+// (owner, denom). One owner holding two denoms yields two accounts, each
+// satisfying ZK-04 with only its own denom — without the denom filter the uusdc
+// account would wrongly absorb the uatom deposit (500000 != 505000) and break ZK-04.
+func TestWitnessBuild_MultiDenomSameOwner(t *testing.T) {
+	ls := state.NewLocalState()
+	depUSDC := types.DepositRecord{DepositID: "dep-usdc", Owner: aliceAddr, Denom: "uusdc", Amount: "500000"}
+	depATOM := types.DepositRecord{DepositID: "dep-atom", Owner: aliceAddr, Denom: "uatom", Amount: "5000"}
+	oldRoot := ls.Root()
+	if _, err := ls.ApplyDeposit(depUSDC); err != nil {
+		t.Fatalf("apply usdc: %v", err)
+	}
+	if _, err := ls.ApplyDeposit(depATOM); err != nil {
+		t.Fatalf("apply atom: %v", err)
+	}
+	newRoot := ls.Root()
+
+	w, err := batch.NewWitnessBuilder().Build(batch.WitnessInputs{
+		Settlement: batch.SettlementInputs{
+			OldStateRoot: oldRoot,
+			NewStateRoot: newRoot,
+			Deposits:     []types.DepositRecord{depUSDC, depATOM},
+		},
+		Accounts: []batch.AccountWitnessSecret{
+			{Owner: aliceAddr, UserSecret: aliceSecret, Denom: "uusdc", OldBalance: "0", NewBalance: "500000"},
+			{Owner: aliceAddr, UserSecret: aliceSecret, Denom: "uatom", OldBalance: "0", NewBalance: "5000"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("multi-denom same-owner witness should build, got %v", err)
+	}
+	if len(w.Accounts) != 2 {
+		t.Fatalf("want 2 accounts, got %d", len(w.Accounts))
+	}
+	got := map[string]string{}
+	for _, a := range w.Accounts {
+		got[a.Denom] = a.NewBalance
+	}
+	if got["uusdc"] != "500000" || got["uatom"] != "5000" {
+		t.Fatalf("per-denom balances wrong: %+v", got)
 	}
 }
 
