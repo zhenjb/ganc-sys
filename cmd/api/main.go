@@ -281,6 +281,16 @@ func main() {
 		stateHandler.SetTradeStateProvider(realOrderService)
 		log.Printf("state trading extension wired (GET /api/state ext)")
 
+		// DB-1: keep the CORE settlement cursor in lockstep after a trade settles.
+		// The trade path advances the shared manager root + on-chain root but has no
+		// core pending rows to commit; without this sync the cursor lags and the next
+		// core deposit/withdraw batch fails to build. Only wired in off-chain pending
+		// mode (where the cursor exists).
+		if offchainSettlementService != nil {
+			realOrderService.SetCommittedRootSink(offchainSettlementService)
+			log.Printf("trade settlement wired to advance core settlement cursor (DB-1)")
+		}
+
 		// TRD-V1.0 — trade settlement seams, prover and submitter chosen
 		// INDEPENDENTLY (resolveTradeWiring):
 		//   TRADE_PROVER_MODE = local | remote        (default local)

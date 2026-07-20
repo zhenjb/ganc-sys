@@ -24,6 +24,16 @@ import (
 // sequencer retries the identical (deterministic) batch — self-healing, no
 // double-spend, no x/bank movement (the chain only commits the new root).
 
+// CommittedRootSink is notified after a TRADE batch is accepted on-chain, so the
+// CORE settlement cursor (owned by OffchainSettlementService) can advance to the
+// trade's new root and stay in lockstep with the chain. Without it the cursor
+// lags after every trade and the next core deposit/withdraw batch fails to build
+// (DB-1). Implemented by *OffchainSettlementService; nil when off-chain
+// settlement is disabled.
+type CommittedRootSink interface {
+	AdvanceCommittedRoot(ctx context.Context, newCommittedRoot, batchID string) error
+}
+
 // ownerDenom identifies one (owner, denom) account for balance snapshots.
 type ownerDenom struct {
 	owner string
@@ -149,6 +159,19 @@ func (s *RealOrderService) settleMarket(ctx context.Context, market types.Market
 	}
 	if !accepted {
 		return rollbackRequeue(fmt.Errorf("batch %s not accepted", upd.BatchID), "submit")
+	}
+
+	// DB-1: the trade just advanced the SHARED manager root AND the on-chain root,
+	// but the core pipeline has no pending rows to commit. Sync the core settlement
+	// cursor to this new root so the NEXT core deposit/withdraw batch continues from
+	// it instead of failing to build ("cannot continue transition chain from <stale
+	// root>"). Best-effort: the trade is already on-chain, so a sink error is logged,
+	// not rolled back (rolling back the off-chain state would desync it from chain).
+	if s.committedRootSink != nil {
+		if serr := s.committedRootSink.AdvanceCommittedRoot(ctx, res.NewRoot, upd.BatchID); serr != nil {
+			log.Printf("[trade-settlement] WARNING batch=%s settled on-chain but core cursor advance failed: %v (next core batch may fail to build until reconciled)",
+				upd.BatchID, serr)
+		}
 	}
 
 	log.Printf("[trade-settlement] SETTLED batch=%s market=%s fills=%d newRoot=%s tx=%s",

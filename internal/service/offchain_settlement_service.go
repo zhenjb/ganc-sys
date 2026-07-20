@@ -477,6 +477,53 @@ func (s *OffchainSettlementService) CommitBatch(
 	return s.repository.UpsertCursor(ctx, cursor)
 }
 
+// AdvanceCommittedRoot syncs the CORE settlement cursor to a new on-chain
+// committed root produced OUTSIDE the core pipeline — specifically the TRADE
+// settlement path (RealOrderService), which advances the SHARED off-chain manager
+// root and the on-chain root but has NO core pending rows to MarkCommitted.
+//
+// DB-1: without this, after any trade the cursor's CommittedRoot lags the real
+// chain root, so the NEXT core deposit/withdraw batch fails to build with
+// "cannot continue transition chain from <stale root>" (the pending transition's
+// rootBefore is the trade root, which the stale cursor can never reach).
+//
+// It mirrors CommitBatch's cursor advance but skips MarkCommitted (a trade has no
+// core pending rows). From the caller's view it is best-effort: the trade is
+// already committed on-chain and irreversible, so a cursor-write failure is
+// logged by the caller, not rolled back.
+func (s *OffchainSettlementService) AdvanceCommittedRoot(
+	ctx context.Context,
+	newCommittedRoot string,
+	batchID string,
+) error {
+	if s.repository == nil {
+		return ErrOffchainSettlementUnavailable
+	}
+	if strings.TrimSpace(newCommittedRoot) == "" {
+		return fmt.Errorf("%w: newCommittedRoot is empty", ErrInvalidPendingSettlement)
+	}
+
+	cursor, err := s.getOrInitCursor(ctx)
+	if err != nil {
+		return err
+	}
+
+	// PendingRoot != CommittedRoot means an uncommitted core pending chain exists,
+	// i.e. core and trade settlement interleaved with overlapping pending state
+	// (the two-pipeline serialization assumption was violated). We still advance
+	// (the trade IS on-chain) but log loudly so the operator can investigate.
+	if cursor.PendingRoot != cursor.CommittedRoot {
+		log.Printf("[offchain-settlement] WARNING advancing committed root to trade batch %s (%s) while core pending differs (committed=%s pending=%s) — core/trade settlement interleaving",
+			batchID, newCommittedRoot, cursor.CommittedRoot, cursor.PendingRoot)
+	}
+
+	cursor.CommittedRoot = newCommittedRoot
+	cursor.PendingRoot = newCommittedRoot
+	cursor.LastCommittedBatchID = batchID
+
+	return s.repository.UpsertCursor(ctx, cursor)
+}
+
 func (s *OffchainSettlementService) FailBatch(
 	ctx context.Context,
 	batchID string,
