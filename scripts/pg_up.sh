@@ -64,8 +64,9 @@ for i in $(seq 1 30); do
   sleep 1
 done
 
-# 3. Apply migrations (idempotent).
-for f in 001_init 002_withdraw_request_sequence 003_offchain_settlement; do
+# 3. Apply migrations (idempotent). ORDER MATTERS: 004 drops the dead tables that
+#    001 creates, so it must run last (each pg_up.sh run ends with them absent).
+for f in 001_init 002_withdraw_request_sequence 003_offchain_settlement 004_drop_dead_tables; do
   path="$GANC_SYS_DIR/migrations/${f}.sql"
   [ -f "$path" ] || die "thiếu migration $path"
   docker exec -i "$CONTAINER" psql -v ON_ERROR_STOP=1 -U "$PG_USER" -d "$PG_DB" < "$path" >/dev/null \

@@ -181,7 +181,7 @@ sleep 1
 if [ "$RESET_OFFCHAIN_DB" = "1" ]; then
   if docker exec -i "$PG_CONTAINER" psql -U ganc -d ganc_sys >/dev/null 2>&1 <<'SQL'
 TRUNCATE offchain_pending_deposits, offchain_pending_withdrawals,
-         withdraw_requests, indexed_deposits, batch_builds,
+         withdraw_requests, batch_builds,
          proof_bundles, submit_batches, indexed_withdraw_records;
 DELETE FROM offchain_state_cursors;
 ALTER SEQUENCE withdraw_request_seq RESTART;
