@@ -329,6 +329,25 @@ func (s *BatchService) buildPendingBatch(ctx context.Context) (types.BuildBatchR
 	}, nil
 }
 
+// markSettledDepositsProcessed flips the read-model Processed flag for every
+// deposit in a just-accepted batch (Nhóm 4 (d)) — GET /api/deposits otherwise keeps
+// the index-time false. Best-effort: a stale flag is cosmetic and must not affect
+// the settle result, so this returns nothing and ignores unknown ids.
+func (s *BatchService) markSettledDepositsProcessed(ctx context.Context, upd types.SettlementUpdate) {
+	if s.depositRepository == nil {
+		return
+	}
+	ids := make([]string, 0, len(upd.Deposits))
+	for _, d := range upd.Deposits {
+		if d.DepositID != "" {
+			ids = append(ids, d.DepositID)
+		}
+	}
+	if len(ids) > 0 {
+		s.depositRepository.MarkProcessed(ctx, ids)
+	}
+}
+
 func (s *BatchService) SubmitBatch(ctx context.Context, req types.SubmitBatchRequestBody) (types.SubmitBatchResponse, error) {
 	// Real ZK verification gate. Mirrors the on-chain x/zkdex invariant:
 	// currentStateRoot advances only after proof verification succeeds.
@@ -373,6 +392,7 @@ func (s *BatchService) SubmitBatch(ctx context.Context, req types.SubmitBatchReq
 	// the pending state back so no balance is left stuck in an unsettled batch.
 	if result.Accepted {
 		s.commitStateBaseline()
+		s.markSettledDepositsProcessed(ctx, req.SettlementUpdate)
 	} else {
 		s.rollbackStateToBaseline()
 	}

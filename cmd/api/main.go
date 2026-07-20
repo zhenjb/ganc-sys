@@ -134,6 +134,10 @@ func main() {
 	chainDepositMode := getenv("CHAIN_DEPOSIT_MODE", chainDepositModeLocal)
 	chainClient := newChainClient(chainDepositMode)
 
+	// Nhóm 4 (b): surface the real runtime mode on GET /api/state instead of the
+	// MemoryStore seed "local" (e.g. "cosmos" when running against a real chain).
+	stateHandler.SetMode(chainDepositMode)
+
 	depositRepository := repository.NewDepositRepositoryWithChainQuery(
 		memoryStore,
 		chainQueryClient,
@@ -290,6 +294,10 @@ func main() {
 			realOrderService.SetCommittedRootSink(offchainSettlementService)
 			log.Printf("trade settlement wired to advance core settlement cursor (DB-1)")
 		}
+
+		// Nhóm 4 (c): surface settled trade batches in GET /api/state's latest*
+		// pointers (MemoryStore satisfies TradeBatchRecorder).
+		realOrderService.SetTradeBatchRecorder(memoryStore)
 
 		// TRD-V1.0 — trade settlement seams, prover and submitter chosen
 		// INDEPENDENTLY (resolveTradeWiring):

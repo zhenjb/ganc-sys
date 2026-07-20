@@ -299,8 +299,11 @@ type RealOrderService struct {
 	// committedRootSink keeps the CORE settlement cursor in lockstep after a trade
 	// settles on-chain (DB-1). nil when off-chain settlement is disabled.
 	committedRootSink CommittedRootSink
-	matchMu           sync.Mutex // single-writer: serializes matching + settle (INT-T05/T06)
-	now               func() int64
+	// tradeBatchRecorder surfaces settled trade batches in GET /api/state's latest*
+	// pointers (Nhóm 4 (c)). nil is a no-op.
+	tradeBatchRecorder TradeBatchRecorder
+	matchMu            sync.Mutex // single-writer: serializes matching + settle (INT-T05/T06)
+	now                func() int64
 }
 
 // orderRecord is the retained data for one placed order (INT-T06 settlement).
@@ -376,6 +379,14 @@ func (s *RealOrderService) SetCommittedRootSink(sink CommittedRootSink) {
 	s.matchMu.Lock()
 	defer s.matchMu.Unlock()
 	s.committedRootSink = sink
+}
+
+// SetTradeBatchRecorder wires the dashboard latest* pointers so settled trade
+// batches surface in GET /api/state (Nhóm 4 (c)). nil is a no-op.
+func (s *RealOrderService) SetTradeBatchRecorder(rec TradeBatchRecorder) {
+	s.matchMu.Lock()
+	defer s.matchMu.Unlock()
+	s.tradeBatchRecorder = rec
 }
 
 // RecordFills appends fills to the permanent trade history (GET /api/trades)

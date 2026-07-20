@@ -34,6 +34,13 @@ type CommittedRootSink interface {
 	AdvanceCommittedRoot(ctx context.Context, newCommittedRoot, batchID string) error
 }
 
+// TradeBatchRecorder records the most recent trade batch's settlement/commitments/
+// proof so GET /api/state's latest* pointers include trade batches, not only core
+// (Nhóm 4 (c)). Implemented by *store.MemoryStore; nil is a no-op.
+type TradeBatchRecorder interface {
+	SaveLatestTradeBatch(upd types.SettlementUpdate, com types.BatchCommitments, proof types.ProofBundle)
+}
+
 // ownerDenom identifies one (owner, denom) account for balance snapshots.
 type ownerDenom struct {
 	owner string
@@ -172,6 +179,12 @@ func (s *RealOrderService) settleMarket(ctx context.Context, market types.Market
 			log.Printf("[trade-settlement] WARNING batch=%s settled on-chain but core cursor advance failed: %v (next core batch may fail to build until reconciled)",
 				upd.BatchID, serr)
 		}
+	}
+
+	// Nhóm 4 (c): surface this trade batch in GET /api/state's latest* pointers
+	// (dashboard otherwise showed only the last CORE batch).
+	if s.tradeBatchRecorder != nil {
+		s.tradeBatchRecorder.SaveLatestTradeBatch(upd, com, proof)
 	}
 
 	log.Printf("[trade-settlement] SETTLED batch=%s market=%s fills=%d newRoot=%s tx=%s",

@@ -61,6 +61,24 @@ func TestStateBackwardCompatNoTradeFields(t *testing.T) {
 	}
 }
 
+// Nhóm 4 (b): SetMode overrides the dashboard "mode" field to reflect the runtime
+// (e.g. "cosmos") instead of the MemoryStore seed "local". Empty leaves it as-is.
+func TestStateModeReflectsRuntime(t *testing.T) {
+	h, _ := newStateHandler(t, false, nil)
+	h.SetMode("cosmos")
+
+	rec := httptest.NewRecorder()
+	h.GetState(rec, httptest.NewRequest(http.MethodGet, "/api/state", nil))
+
+	var st types.AppState
+	if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if st.Mode != "cosmos" {
+		t.Fatalf("mode = %q, want cosmos", st.Mode)
+	}
+}
+
 // With the extension wired, GET /api/state?owner= returns the trading slice.
 func TestStateExtReturnsTradingFields(t *testing.T) {
 	h, svc := newStateHandler(t, true, []types.DepositRecord{

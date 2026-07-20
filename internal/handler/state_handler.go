@@ -22,6 +22,10 @@ type StateHandler struct {
 	// tradeState is the optional INT-T07 trading extension source. When nil the
 	// response is exactly the base deposit/withdraw dashboard (backward-compat).
 	tradeState service.TradeStateProvider
+	// mode overrides the dashboard "mode" field to reflect the actual runtime
+	// (e.g. "cosmos" against a real chain) instead of the MemoryStore seed "local".
+	// Empty leaves the base value untouched (Nhóm 4 (b)).
+	mode string
 }
 
 func NewStateHandler(stateService *service.StateService) *StateHandler {
@@ -36,8 +40,21 @@ func (h *StateHandler) SetTradeStateProvider(provider service.TradeStateProvider
 	h.tradeState = provider
 }
 
+// SetMode wires the runtime mode reflected by GET /api/state's "mode" field
+// (Nhóm 4 (b)). Called from cmd/api with the resolved chain-deposit mode so the
+// dashboard shows "cosmos" on a real chain instead of the seed "local". Empty is
+// a no-op.
+func (h *StateHandler) SetMode(mode string) {
+	h.mode = mode
+}
+
 func (h *StateHandler) GetState(w http.ResponseWriter, r *http.Request) {
 	result := h.stateService.GetState(r.Context())
+
+	// Nhóm 4 (b): reflect the real runtime mode instead of the MemoryStore seed.
+	if h.mode != "" {
+		result.Mode = h.mode
+	}
 
 	// INT-T07: append the trading slice (reserved balances, open orders for the
 	// optional ?owner=, latest trades, market status). APPEND-ONLY for those.

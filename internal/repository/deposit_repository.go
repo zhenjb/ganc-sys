@@ -60,6 +60,15 @@ func (r *DepositRepository) SaveDeposit(ctx context.Context, record types.Deposi
 	r.store.SaveDeposit(record)
 }
 
+// MarkProcessed flips the given deposits' Processed flag once their batch has
+// settled on-chain (Nhóm 4 (d)). Best-effort against the in-memory read model that
+// backs GET /api/deposits; unknown ids are ignored.
+func (r *DepositRepository) MarkProcessed(ctx context.Context, depositIDs []string) {
+	for _, id := range depositIDs {
+		r.store.MarkDepositProcessed(id)
+	}
+}
+
 func (r *DepositRepository) GetDeposit(ctx context.Context, depositID string) (types.DepositRecord, error) {
 	if usesChainQuery(r.queryMode) && r.chainQueryClient != nil {
 		return r.getDepositChainFirst(ctx, depositID)

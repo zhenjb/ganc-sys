@@ -4,7 +4,39 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/zhenjb/ganc-sys/pkg/types"
 )
+
+// fakeTradeBatchRecorder captures SaveLatestTradeBatch calls (Nhóm 4 (c)).
+type fakeTradeBatchRecorder struct {
+	calls    int
+	batchIDs []string
+}
+
+func (f *fakeTradeBatchRecorder) SaveLatestTradeBatch(upd types.SettlementUpdate, _ types.BatchCommitments, _ types.ProofBundle) {
+	f.calls++
+	f.batchIDs = append(f.batchIDs, upd.BatchID)
+}
+
+// Nhóm 4 (c): after a trade settles, the recorder is called with the trade batch so
+// GET /api/state's latest* pointers can reflect it.
+func TestSettleTradesRecordsLatestTradeBatch(t *testing.T) {
+	svc, _ := settleSetup(t)
+	rec := &fakeTradeBatchRecorder{}
+	svc.SetTradeBatchRecorder(rec)
+
+	settled, err := svc.SettleTradesOnce(context.Background())
+	if err != nil || !settled {
+		t.Fatalf("settle = (%v,%v), want (true,nil)", settled, err)
+	}
+	if rec.calls != 1 {
+		t.Fatalf("recorder called %d times, want 1", rec.calls)
+	}
+	if rec.batchIDs[0] == "" {
+		t.Fatal("recorded trade batchID empty")
+	}
+}
 
 // fakeCommittedRootSink records AdvanceCommittedRoot calls; err (if set) is
 // returned to prove a sink failure does not fail the (already on-chain) trade.

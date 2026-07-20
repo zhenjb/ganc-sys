@@ -80,6 +80,26 @@ func (s *MemoryStore) SaveDeposit(record types.DepositRecord) {
 	creditBalance(s.appState.ModuleAccountBalance, record.Denom, record.Amount)
 }
 
+// MarkDepositProcessed flips an indexed deposit's Processed flag to true once its
+// batch has settled on-chain, so the deposit read model (list + latestDeposit)
+// reflects the real on-chain status instead of the index-time false (Nhóm 4 (d)).
+// Unknown ids are ignored.
+func (s *MemoryStore) MarkDepositProcessed(depositID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	record, ok := s.deposits[depositID]
+	if !ok {
+		return
+	}
+	record.Processed = true
+	s.deposits[depositID] = record
+
+	if s.appState.LatestDeposit != nil && s.appState.LatestDeposit.DepositID == depositID {
+		s.appState.LatestDeposit.Processed = true
+	}
+}
+
 func (s *MemoryStore) GetDeposit(depositID string) (types.DepositRecord, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -164,6 +184,24 @@ func (s *MemoryStore) SaveBatchBuild(
 	s.appState.BatchStatus = "built"
 	s.appState.ProofStatus = "idle"
 	s.appState.WithdrawStatus = "batchBuilt"
+}
+
+// SaveLatestTradeBatch records the most recent TRADE batch's settlement,
+// commitments and proof so GET /api/state's latest* pointers reflect trade batches
+// too — not only the core deposit/withdraw path (Nhóm 4 (c)). It touches ONLY the
+// latest* pointers, NOT CurrentStateRoot or the *Status fields, which stay owned by
+// the core pipeline (the state root itself is sourced from chain REST).
+func (s *MemoryStore) SaveLatestTradeBatch(
+	settlementUpdate types.SettlementUpdate,
+	batchCommitments types.BatchCommitments,
+	proofBundle types.ProofBundle,
+) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.appState.LatestSettlement = cloneSettlementUpdatePtr(settlementUpdate)
+	s.appState.LatestBatchCommitments = cloneBatchCommitmentsPtr(batchCommitments)
+	s.appState.LatestProof = cloneProofBundlePtr(proofBundle)
 }
 
 func (s *MemoryStore) SaveProofBundle(proofBundle types.ProofBundle) {

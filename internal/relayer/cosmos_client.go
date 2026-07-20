@@ -366,16 +366,32 @@ func (c *CosmosClient) ClaimWithdraw(ctx context.Context, input ClaimWithdrawInp
 		c.commonTxArgs(signer)...,
 	)
 
-	out, runErr := c.runner.Run(ctx, c.cfg.Binary, args...)
-	tx, parseErr := parseTxOutput(out)
-	if runErr != nil && tx.TxHash == "" {
-		return ClaimWithdrawResult{}, fmt.Errorf("claim-withdraw failed: %w: %s", runErr, strings.TrimSpace(string(out)))
+	tx, err := c.broadcast(ctx, args)
+	if err != nil {
+		return ClaimWithdrawResult{}, fmt.Errorf("claim-withdraw failed: %w", err)
 	}
-	if parseErr != nil {
-		return ClaimWithdrawResult{}, fmt.Errorf("claim-withdraw: %w", parseErr)
-	}
+	// CheckTx-level rejection (ante/handler).
 	if tx.Code != 0 {
 		return ClaimWithdrawResult{}, fmt.Errorf("claim-withdraw rejected by chain (code=%d): %s", tx.Code, tx.RawLog)
+	}
+
+	// Nhóm 4 (a): --broadcast-mode sync returns after CheckTx, BEFORE the module→
+	// destination transfer runs in DeliverTx. Wait for the tx to be committed in a
+	// block and check the IN-BLOCK code, so a claim that fails on-chain is never
+	// reported as success. Mirrors SubmitBatchProof. (Was: only the CheckTx code was
+	// checked — an immediate balance read after the response saw pre-transfer state,
+	// which looked like "claimed but funds not moved".)
+	if c.cfg.WaitForCommit {
+		committed, waitErr := c.waitForTxCommit(ctx, tx.TxHash)
+		if waitErr != nil {
+			return ClaimWithdrawResult{TxHash: tx.TxHash}, fmt.Errorf(
+				"claim-withdraw broadcast (tx=%s) but not confirmed in a block: %w", tx.TxHash, waitErr)
+		}
+		if committed.Code != 0 {
+			return ClaimWithdrawResult{TxHash: committed.TxHash}, fmt.Errorf(
+				"claim-withdraw rejected in block (code=%d): %s", committed.Code, committed.RawLog)
+		}
+		tx = committed
 	}
 
 	claimed := input.WithdrawRecord

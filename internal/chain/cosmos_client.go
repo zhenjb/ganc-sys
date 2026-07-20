@@ -169,7 +169,13 @@ func (c *CosmosClient) Deposit(ctx context.Context, req DepositRequest) (TxResul
 	}
 
 	if !ok {
-		return TxResult{}, fmt.Errorf("deposit tx %s committed but EventDeposit not found after polling (depositId unavailable)", tx.TxHash)
+		// Nhóm 4 (e): the tx IS committed on-chain (we have its hash) but the typed
+		// EventDeposit did not surface within the poll budget, so the chain-assigned
+		// depositId is unavailable for a synchronous index. Return the txHash (NOT an
+		// empty result) + the error so the caller can still report the broadcast; the
+		// async deposit poller indexes the deposit from the block event shortly.
+		return TxResult{TxHash: tx.TxHash, Height: tx.Height},
+			fmt.Errorf("deposit tx %s committed but EventDeposit not found after polling (depositId unavailable)", tx.TxHash)
 	}
 
 	return TxResult{
