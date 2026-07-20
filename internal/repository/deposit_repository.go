@@ -61,7 +61,7 @@ func (r *DepositRepository) SaveDeposit(ctx context.Context, record types.Deposi
 }
 
 func (r *DepositRepository) GetDeposit(ctx context.Context, depositID string) (types.DepositRecord, error) {
-	if r.queryMode == "rest" && r.chainQueryClient != nil {
+	if usesChainQuery(r.queryMode) && r.chainQueryClient != nil {
 		return r.getDepositChainFirst(ctx, depositID)
 	}
 

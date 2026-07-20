@@ -86,6 +86,13 @@ type ListWithdrawRequestsResponse struct {
 	WithdrawRequests []WithdrawRequest `json:"withdrawRequests"`
 }
 
+// ListWithdrawRecordsResponse is the settled-withdrawal history (analog of
+// ListDepositsResponse). Records appear once a withdrawal batch is settled
+// on-chain; each carries its claimed status.
+type ListWithdrawRecordsResponse struct {
+	WithdrawRecords []WithdrawRecord `json:"withdrawRecords"`
+}
+
 type GetWithdrawRequestResponse struct {
 	WithdrawRequest WithdrawRequest `json:"withdrawRequest"`
 }

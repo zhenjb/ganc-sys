@@ -24,6 +24,9 @@ type AppState struct {
 	OpenOrders       []OpenOrder             `json:"openOrders,omitempty"`
 	LatestTrades     []Fill                  `json:"latestTrades,omitempty"`
 	MarketStatus     map[string]MarketStatus `json:"marketStatus,omitempty"`
+	// Denoms is the list of denoms the DEX trades (every market's base + quote),
+	// sorted + de-duplicated. Present only with the trading extension (real mode).
+	Denoms []string `json:"denoms,omitempty"`
 }
 
 type PartialState struct {

@@ -36,8 +36,19 @@ func TestTradeStateAfterOrder(t *testing.T) {
 	if len(ts.OpenOrders) != 1 || ts.OpenOrders[0].Market != "ATOM/USDC" {
 		t.Fatalf("openOrders = %+v, want one ATOM/USDC order", ts.OpenOrders)
 	}
-	if ts.MarketStatus["ATOM/USDC"] != types.MarketActive {
-		t.Fatalf("marketStatus[ATOM/USDC] = %q, want active", ts.MarketStatus["ATOM/USDC"])
+	// marketStatus is keyed by the denom pair (baseDenom/quoteDenom), not the
+	// display symbol, so it shares userBalances' denom vocabulary.
+	if ts.MarketStatus["uatom/uusdc"] != types.MarketActive {
+		t.Fatalf("marketStatus[uatom/uusdc] = %q, want active", ts.MarketStatus["uatom/uusdc"])
+	}
+	// userBalances is the TOTAL rollup holding = available + reserved, so locking
+	// collateral leaves it unchanged (2980 + 2020 = 5000).
+	if ts.UserBalances["cosmos1alice/uusdc"] != "5000" {
+		t.Fatalf("userBalances[cosmos1alice/uusdc] = %q, want 5000 (available+reserved)", ts.UserBalances["cosmos1alice/uusdc"])
+	}
+	// denoms is the sorted distinct denom set of the registry (base+quote).
+	if len(ts.Denoms) != 3 || ts.Denoms[0] != "uatom" || ts.Denoms[1] != "uosmo" || ts.Denoms[2] != "uusdc" {
+		t.Fatalf("denoms = %v, want [uatom uosmo uusdc]", ts.Denoms)
 	}
 	if len(ts.LatestTrades) != 0 {
 		t.Fatalf("latestTrades = %d, want 0 (no match yet)", len(ts.LatestTrades))

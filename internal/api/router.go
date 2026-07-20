@@ -58,6 +58,8 @@ func (r *Router) Routes() http.Handler {
 	mux.HandleFunc("POST /api/withdraw-request", r.withdrawHandler.CreateWithdrawRequest)
 	mux.HandleFunc("GET /api/withdraw-requests", r.withdrawHandler.ListWithdrawRequests)
 	mux.HandleFunc("GET /api/withdraw-requests/{withdrawId}", r.withdrawHandler.GetWithdrawRequest)
+	// GET /api/withdraws — settled-withdrawal history (analog of GET /api/deposits).
+	mux.HandleFunc("GET /api/withdraws", r.withdrawHandler.ListWithdrawRecords)
 	mux.HandleFunc("POST /api/withdraw/claim", r.withdrawHandler.ClaimWithdraw)
 
 	mux.HandleFunc("POST /api/batch/build", r.batchHandler.BuildBatch)

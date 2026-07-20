@@ -64,6 +64,15 @@ func (h *WithdrawHandler) ListWithdrawRequests(w http.ResponseWriter, r *http.Re
 	response.JSON(w, http.StatusOK, result)
 }
 
+// ListWithdrawRecords handles GET /api/withdraws — the settled-withdrawal
+// history (analog of GET /api/deposits). Distinct from GET /api/withdraw-requests
+// which lists pending requests before settlement.
+func (h *WithdrawHandler) ListWithdrawRecords(w http.ResponseWriter, r *http.Request) {
+	result := h.withdrawService.ListWithdrawRecords(r.Context())
+
+	response.JSON(w, http.StatusOK, result)
+}
+
 func (h *WithdrawHandler) GetWithdrawRequest(w http.ResponseWriter, r *http.Request) {
 	withdrawID := r.PathValue("withdrawId")
 	if withdrawID == "" {

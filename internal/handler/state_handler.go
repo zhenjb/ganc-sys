@@ -40,14 +40,21 @@ func (h *StateHandler) GetState(w http.ResponseWriter, r *http.Request) {
 	result := h.stateService.GetState(r.Context())
 
 	// INT-T07: append the trading slice (reserved balances, open orders for the
-	// optional ?owner=, latest trades, market status). APPEND-ONLY — the base
-	// fields above are untouched.
+	// optional ?owner=, latest trades, market status). APPEND-ONLY for those.
+	//
+	// userBalances is ALSO overridden here with the real off-chain (L2) holdings
+	// from the shared state manager (available + reserved per owner/denom),
+	// replacing the legacy seeded memory ledger. moduleAccountBalance is left
+	// exactly as StateService assembled it — the chain REST module balance (ground
+	// truth) when CHAIN_QUERY_MODE is cosmos/rest, else the memory mirror.
 	if h.tradeState != nil {
 		ts := h.tradeState.TradeState(r.Context(), r.URL.Query().Get("owner"))
 		result.ReservedBalances = ts.ReservedBalances
 		result.OpenOrders = ts.OpenOrders
 		result.LatestTrades = ts.LatestTrades
 		result.MarketStatus = ts.MarketStatus
+		result.UserBalances = ts.UserBalances
+		result.Denoms = ts.Denoms
 	}
 
 	response.JSON(w, http.StatusOK, result)

@@ -132,6 +132,15 @@ func (s *WithdrawService) ListWithdrawRequests(ctx context.Context) types.ListWi
 	}
 }
 
+// ListWithdrawRecords returns the settled-withdrawal history (analog of
+// DepositService.ListDeposits). It reads from the same durable store that backs
+// GetWithdrawRecord / ClaimWithdraw, so claimed status is reflected.
+func (s *WithdrawService) ListWithdrawRecords(ctx context.Context) types.ListWithdrawRecordsResponse {
+	return types.ListWithdrawRecordsResponse{
+		WithdrawRecords: s.withdrawRepository.ListWithdrawRecords(ctx),
+	}
+}
+
 func (s *WithdrawService) GetWithdrawRequest(ctx context.Context, withdrawID string) (types.GetWithdrawRequestResponse, error) {
 	request, err := s.withdrawRepository.GetWithdrawRequest(ctx, withdrawID)
 	if err != nil {

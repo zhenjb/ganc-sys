@@ -96,8 +96,18 @@ func TestStateExtReturnsTradingFields(t *testing.T) {
 	if reserved != "2020" {
 		t.Fatalf("alice reserved uusdc = %q, want 2020", reserved)
 	}
-	if st.MarketStatus["ATOM/USDC"] != types.MarketActive {
-		t.Fatalf("marketStatus[ATOM/USDC] = %q, want active", st.MarketStatus["ATOM/USDC"])
+	// marketStatus is keyed by the denom pair (uatom/uusdc), not the display symbol.
+	if st.MarketStatus["uatom/uusdc"] != types.MarketActive {
+		t.Fatalf("marketStatus[uatom/uusdc] = %q, want active", st.MarketStatus["uatom/uusdc"])
+	}
+	// userBalances is overridden with the real off-chain total (available+reserved):
+	// alice's 5000 uusdc stays 5000 after locking 2020 as collateral.
+	if st.UserBalances["cosmos1alice/uusdc"] != "5000" {
+		t.Fatalf("userBalances[cosmos1alice/uusdc] = %q, want 5000", st.UserBalances["cosmos1alice/uusdc"])
+	}
+	// denoms lists the registry's traded denoms (base+quote), sorted+deduped.
+	if len(st.Denoms) != 3 || st.Denoms[0] != "uatom" || st.Denoms[1] != "uosmo" || st.Denoms[2] != "uusdc" {
+		t.Fatalf("denoms = %v, want [uatom uosmo uusdc]", st.Denoms)
 	}
 	// Core fields still present.
 	if st.CurrentStateRoot == "" {

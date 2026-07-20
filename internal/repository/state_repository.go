@@ -48,10 +48,20 @@ func NewStateRepositoryWithChainQuery(
 	}
 }
 
+// usesChainQuery reports whether the configured query mode should read the real
+// x/zkdex chain REST/LCD. Both "rest" (historical) and "cosmos" (the value the
+// real_*_up.sh scripts export, matching RELAYER_MODE / CHAIN_DEPOSIT_MODE) mean
+// "query the chain"; "local" (and anything else) keeps the in-memory mirror.
+// Before this, only "rest" activated the chain path, so the scripts' "cosmos"
+// silently served stale MemoryStore root/balance (see docs/api/api_list.md #1).
+func usesChainQuery(mode string) bool {
+	return mode == "rest" || mode == "cosmos"
+}
+
 func (r *StateRepository) GetState(ctx context.Context) types.AppState {
 	state := r.store.GetAppState()
 
-	if r.queryMode != "rest" || r.chainQueryClient == nil {
+	if !usesChainQuery(r.queryMode) || r.chainQueryClient == nil {
 		return state
 	}
 
