@@ -240,6 +240,22 @@ func (r *BatchRepository) saveBatchSubmitResultPostgres(
 		return err
 	}
 
+	// Nhóm 3: advance batch_builds.status past 'built' to reflect the submit result
+	// (audit view). Same tx as the submit_batches row. No-op if the build was not
+	// persisted (WHERE matches nothing).
+	buildStatus := "accepted"
+	if !accepted {
+		buildStatus = "rejected"
+	}
+	if _, err := tx.Exec(
+		ctx,
+		`UPDATE batch_builds SET status = $2, updated_at = NOW() WHERE batch_id = $1`,
+		settlementUpdate.BatchID,
+		buildStatus,
+	); err != nil {
+		return err
+	}
+
 	for _, record := range withdrawRecords {
 		_, err = tx.Exec(
 			ctx,

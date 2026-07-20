@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
@@ -569,6 +570,17 @@ func (r *WithdrawRepository) claimWithdrawRecordPostgres(
 	)
 	if err != nil {
 		return types.WithdrawRecord{}, err
+	}
+
+	// Nhóm 3: mirror the terminal 'claimed' status onto withdraw_requests (audit
+	// view). Best-effort — a mirror failure must not fail the claim, which already
+	// committed the record above.
+	if _, uerr := r.dbPool.Exec(
+		ctx,
+		`UPDATE withdraw_requests SET status = 'claimed', updated_at = NOW() WHERE withdraw_id = $1`,
+		withdrawID,
+	); uerr != nil {
+		log.Printf("[withdraw] claimed but mirror withdraw_requests.status failed for %s: %v", withdrawID, uerr)
 	}
 
 	record.Claimed = true

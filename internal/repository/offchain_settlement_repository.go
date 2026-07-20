@@ -511,6 +511,17 @@ func (r *OffchainSettlementRepository) MarkIncluded(
 		if tag.RowsAffected() == 0 {
 			return fmt.Errorf("%w: withdrawal %s", ErrOffchainSettlementRecordNotFound, withdrawID)
 		}
+
+		// Nhóm 3: mirror the settlement lifecycle onto withdraw_requests.status (audit
+		// view) so it advances past 'requested'. Best-effort — no matching row (memory
+		// request store) is a harmless no-op; a SQL error rolls back with the pending.
+		if _, err := tx.Exec(
+			ctx,
+			`UPDATE withdraw_requests SET status = 'included', updated_at = NOW() WHERE withdraw_id = $1`,
+			withdrawID,
+		); err != nil {
+			return err
+		}
 	}
 
 	return tx.Commit(ctx)
@@ -587,6 +598,19 @@ func (r *OffchainSettlementRepository) markByBatch(
 		return err
 	}
 
+	// Nhóm 3: mirror the batch's committed/failed status onto withdraw_requests
+	// (audit view) for every withdrawal in the batch. Same batch_id the pending rows
+	// just took, so the subquery finds them within this tx.
+	if _, err := tx.Exec(
+		ctx,
+		`UPDATE withdraw_requests SET status = $2, updated_at = NOW()
+		 WHERE withdraw_id IN (SELECT withdraw_id FROM offchain_pending_withdrawals WHERE batch_id = $1)`,
+		batchID,
+		status,
+	); err != nil {
+		return err
+	}
+
 	return tx.Commit(ctx)
 }
 
@@ -621,6 +645,18 @@ func (r *OffchainSettlementRepository) ReopenIncluded(
 		reason,
 	)
 	if err != nil {
+		return err
+	}
+
+	// Nhóm 3: reset the mirrored withdraw_requests.status back to 'requested' for the
+	// reopened withdrawals. MUST run before the pending update below nulls batch_id,
+	// so the subquery can still match them by batch_id.
+	if _, err := tx.Exec(
+		ctx,
+		`UPDATE withdraw_requests SET status = 'requested', updated_at = NOW()
+		 WHERE withdraw_id IN (SELECT withdraw_id FROM offchain_pending_withdrawals WHERE batch_id = $1 AND status = 'included')`,
+		batchID,
+	); err != nil {
 		return err
 	}
 
