@@ -98,6 +98,12 @@ type SignedOrder struct {
 	Expiry    string    `json:"expiry"`
 	Nonce     string    `json:"nonce"`
 	Signature string    `json:"signature"`
+
+	// PubKey is the base64 compressed secp256k1 public key of the signer,
+	// supplied only for real ADR-036 verification (ORDER_SIG_MODE=adr36). Like
+	// Signature it is transport-only and is NOT part of CanonicalBytes() — the
+	// canonical preimage cannot cover the key/signature that signs it.
+	PubKey string `json:"pubkey,omitempty"`
 }
 
 // canonicalOrderFields lists, in fixed order, the (label, value) pairs that make

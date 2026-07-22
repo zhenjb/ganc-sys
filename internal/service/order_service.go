@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -335,7 +336,10 @@ func NewRealOrderService(manager *state.OffchainStateManager, markets []types.Ma
 	// The BookSet shares the manager (reserve on insert / release on cancel) and
 	// the nullifier marker across every market's book.
 	books := state.NewBookSet(manager, nullifiers)
-	validator := state.NewOrderValidator(registry, manager, nullifiers, nil)
+	// ORDER_SIG_MODE selects order-auth: "adr36" = real Cosmos ADR-036 secp256k1
+	// (binds signer pubkey to Owner); default/"mock" = MVP binding (no wallet).
+	validator := state.NewOrderValidator(registry, manager, nullifiers,
+		state.NewOrderSignatureVerifier(os.Getenv("ORDER_SIG_MODE")))
 	if now == nil {
 		now = func() int64 { return time.Now().Unix() }
 	}

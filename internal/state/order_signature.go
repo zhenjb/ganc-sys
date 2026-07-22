@@ -91,3 +91,23 @@ func (MockOrderSignatureVerifier) Verify(order types.SignedOrder, canonical []by
 	}
 	return nil
 }
+
+// ORDER_SIG_MODE values selecting the order signature verifier.
+const (
+	OrderSigModeMock   = "mock"
+	OrderSigModeADR036 = "adr36"
+)
+
+// NewOrderSignatureVerifier returns the verifier for the given mode (typically
+// os.Getenv("ORDER_SIG_MODE")). "adr36" selects real Cosmos ADR-036 secp256k1
+// verification (ADR036OrderSignatureVerifier); any other value — including ""
+// and "mock" — selects the MVP mock binding so tests/CI and local dev need no
+// wallet. Default is mock ON PURPOSE: adr36 is opt-in for live/prod.
+func NewOrderSignatureVerifier(mode string) OrderSignatureVerifier {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case OrderSigModeADR036, "adr-036", "real":
+		return ADR036OrderSignatureVerifier{}
+	default:
+		return MockOrderSignatureVerifier{}
+	}
+}

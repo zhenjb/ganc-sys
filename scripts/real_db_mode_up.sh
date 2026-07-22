@@ -12,7 +12,7 @@
 #
 # Usage (Codespace / Git Bash):  bash scripts/real_db_mode_up.sh
 # Env overrides: DATABASE_URL, CHAIN_NODE, CHAIN_REST_URL, GAZK_URL, API_PORT,
-#                GAZK_KEY_DIR, TRADE_PROVER_MODE, TRADE_SUBMIT_MODE,
+#                GAZK_KEY_DIR, TRADE_PROVER_MODE, TRADE_SUBMIT_MODE, ORDER_SIG_MODE,
 #                RELAYER_FROM, ASSET_DENOM, START_GAZK, CHAIN_FEES.
 # ---------------------------------------------------------------------------
 set -uo pipefail
@@ -53,6 +53,13 @@ GAZK_KEY_DIR="${GAZK_KEY_DIR:-$GANC_SYS_DIR/.gazk-keys}"
 TRADE_PROVER_MODE="${TRADE_PROVER_MODE:-remote}"
 TRADE_SUBMIT_MODE="${TRADE_SUBMIT_MODE:-chain}"
 GAZK_TRADE_URL="${GAZK_TRADE_URL:-$GAZK_URL}"
+
+# INT-FE-A2 — order authentication. Default REAL (no mock): every order must carry
+# a valid Cosmos ADR-036 secp256k1 wallet signature whose pubkey derives to the
+# order's owner. This is why real mode needs a connected wallet (Keplr/Leap) to
+# place orders. Override ORDER_SIG_MODE=mock ONLY for headless order e2e that
+# cannot sign with a browser wallet (e.g. scripts using p3/.../sign_order).
+ORDER_SIG_MODE="${ORDER_SIG_MODE:-adr36}"
 
 # DEN-D1/DEN-D2: order-market registry seed. When BOTH are empty the backend uses
 # its built-in DefaultMarkets (uatom/uusdc/uosmo). To trade on a chain that funds
@@ -208,6 +215,7 @@ run_api() {
   TRADE_PROVER_MODE="$TRADE_PROVER_MODE" TRADE_SUBMIT_MODE="$TRADE_SUBMIT_MODE" \
   GAZK_TRADE_URL="$GAZK_TRADE_URL" \
   RELAYER_MODE=cosmos CHAIN_DEPOSIT_MODE=cosmos INDEXER_MODE=chain CHAIN_QUERY_MODE=cosmos \
+  ORDER_SIG_MODE="$ORDER_SIG_MODE" \
   CHAIN_BINARY="$CHAIN_BINARY" CHAIN_ID="$CHAIN_ID" \
   CHAIN_NODE="$CHAIN_NODE" CHAIN_RPC_URL="$CHAIN_RPC_URL" CHAIN_REST_URL="$CHAIN_REST_URL" \
   RELAYER_FROM="$RELAYER_FROM" CHAIN_KEYRING_BACKEND="$CHAIN_KEYRING_BACKEND" \
@@ -232,6 +240,7 @@ if [ "$FG" = "1" ]; then
   API      : $API_BASE_URL
   gazk     : $GAZK_URL   (vkId=$GOT_VK, keyDir=$GAZK_KEY_DIR)
   trade    : prover=$TRADE_PROVER_MODE submit=$TRADE_SUBMIT_MODE
+  order-sig: ORDER_SIG_MODE=$ORDER_SIG_MODE   (adr36 = real wallet ADR-036; needs a connected wallet to place orders)
   chain    : RPC $CHAIN_RPC_URL | REST $CHAIN_REST_URL | chain-id $CHAIN_ID
   signer   : $RELAYER_FROM = $ALICE_ADDR
   sequencer: SETTLEMENT_WORKER_ENABLED=$SETTLEMENT_WORKER_ENABLED (interval=$SETTLEMENT_INTERVAL)
@@ -276,6 +285,7 @@ cat <<EOF
   API      : $API_BASE_URL
   gazk     : $GAZK_URL   (vkId=$GOT_VK, keyDir=$GAZK_KEY_DIR)
   trade    : prover=$TRADE_PROVER_MODE submit=$TRADE_SUBMIT_MODE   (TRD-V1: remote+chain = real gazk proof -> chain)
+  order-sig: ORDER_SIG_MODE=$ORDER_SIG_MODE   (adr36 = real wallet ADR-036 signature bound to owner; no mock)
   chain    : RPC $CHAIN_RPC_URL | REST $CHAIN_REST_URL | chain-id $CHAIN_ID
   db       : $DATABASE_URL
   stores   : postgres (withdraw/batch/proof/submit) + offchain pending queue
