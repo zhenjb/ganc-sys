@@ -89,15 +89,17 @@ func (s *WithdrawService) CreateWithdrawRequest(
 
 		// STATE-05/14 (P3): validate nonce == account.Nonce+1 and debit the
 		// pending balance. On failure the off-chain state is left untouched.
-		// INT-WD-NULLIFIER-peruser: resolve a per-owner mock secret here (the
-		// use-case layer that owns the request). This is the DE-MOCK SEAM — a
-		// later step derives the secret from the wallet signature carried on
-		// `req` (ADR-036) instead of from the owner. NullifierFor and the gazk
-		// prover stay untouched either way.
+		// INT-WD-NULLIFIER-peruser: resolve a per-(owner,denom) mock secret here
+		// (the use-case layer that owns the request). Denom is required because
+		// the withdrawal nonce is per-account (owner,denom) — same owner, two
+		// denoms both start at nonce=1, so a per-owner-only secret would still
+		// collide. This is the DE-MOCK SEAM — a later step derives the secret
+		// from the wallet signature carried on `req` (ADR-036, which already
+		// covers denom). NullifierFor and the gazk prover stay untouched.
 		if _, err := s.offchainSettlementService.ApplyWithdrawRequest(
 			ctx,
 			withdrawReq,
-			appstate.WithdrawSecretForOwner(withdrawReq.Owner),
+			appstate.WithdrawSecretFor(withdrawReq.Owner, withdrawReq.Denom),
 		); err != nil {
 			return types.WithdrawRequestResponse{}, err
 		}

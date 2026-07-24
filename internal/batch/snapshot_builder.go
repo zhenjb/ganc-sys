@@ -84,7 +84,7 @@ func (b *SnapshotBuilder) Build(ctx context.Context, in BuildInput) (BuildOutput
 	withdrawals := make([]WithdrawalInput, 0, len(in.WithdrawRequests))
 	for i, req := range in.WithdrawRequests {
 		owner := strings.TrimSpace(req.Owner)
-		secret := resolveSecret(secrets, owner)
+		secret := resolveSecret(secrets, owner, req.Denom)
 
 		nullifier, err := state.NullifierFor(secret, req.Nonce)
 		if err != nil {
@@ -138,7 +138,7 @@ func (b *SnapshotBuilder) Build(ctx context.Context, in BuildInput) (BuildOutput
 
 		accounts = append(accounts, AccountWitnessSecret{
 			Owner:      p.owner,
-			UserSecret: resolveSecret(secrets, p.owner),
+			UserSecret: resolveSecret(secrets, p.owner, p.denom),
 			OldBalance: oldAccount.Balance,
 			NewBalance: newAccount.Balance,
 			Denom:      p.denom,

@@ -90,32 +90,44 @@ func NullifierDomainTag() string {
 	return nullifierDomainTag
 }
 
-// withdrawSecretDomainTag domain-separates the per-owner MOCK withdrawal
-// secret from every other SHA-256 callsite (nullifier, deposit-id, etc.).
+// withdrawSecretDomainTag domain-separates the per-(owner,denom) MOCK
+// withdrawal secret from every other SHA-256 callsite (nullifier, deposit-id,
+// etc.).
 const withdrawSecretDomainTag = "zkdex/withdraw-secret/v1"
 
-// WithdrawSecretForOwner derives the per-owner MOCK secret that seeds a
+// WithdrawSecretFor derives the per-(owner,denom) MOCK secret that seeds a
 // withdrawal nullifier (see NullifierFor). It replaces the single shared
-// "mock-user-secret" literal whose GLOBAL reuse let two DIFFERENT owners
-// collide on the same nullifier once a lockstep reset handed them the same
-// withdrawal nonce (INT-WD-NULLIFIER-peruser).
+// "mock-user-secret" literal whose GLOBAL reuse let DIFFERENT withdrawals
+// collide on the same nullifier (INT-WD-NULLIFIER-peruser).
+//
+// Why BOTH owner AND denom: the withdrawal nonce fed into NullifierFor is
+// PER-ACCOUNT (account.Nonce+1, withdraw_request.go), and an account is keyed
+// by (owner, denom). So the SAME owner withdrawing two different denoms both
+// get nonce=1 — a per-OWNER secret alone would still collide. Folding denom
+// into the secret makes the nullifier unique per (owner, denom, nonce).
 //
 // Properties:
-//   - Deterministic: same owner → same secret, so the request-time nullifier,
-//     the batch-rebuilt nullifier and the gazk prover's re-derivation all
-//     agree (the prover reads UserSecret straight from the witness).
-//   - Injective per owner: distinct owners → distinct secrets → each owner
-//     gets an ISOLATED replay-protection namespace. Same owner+nonce still
-//     yields the same nullifier, so genuine replay is still rejected.
+//   - Deterministic: same (owner, denom) → same secret, so the request-time
+//     nullifier, the batch-rebuilt nullifier and the gazk prover's
+//     re-derivation all agree (the prover reads UserSecret straight from the
+//     witness account, which carries this exact denom).
+//   - Injective per (owner, denom): distinct owners OR distinct denoms →
+//     distinct secrets → an ISOLATED replay-protection namespace each. Same
+//     (owner, denom, nonce) still yields the same nullifier, so genuine replay
+//     is still rejected.
 //
 // DE-MOCK SEAM: the nullifier FORMULA (NullifierFor) and the prover's binding
 // check are UNCHANGED — only the SOURCE of the secret lives here. A later step
-// swaps this owner-derived mock for a wallet-derived secret (ADR-036, parallel
-// to the order-signature de-mock) WITHOUT touching NullifierFor or gazk.
+// swaps this owner/denom-derived mock for a wallet-derived secret (ADR-036,
+// whose signed message already covers denom) WITHOUT touching NullifierFor or
+// gazk.
 //
 // The output is opaque "0x"-prefixed hex (same shape a wallet-derived secret
 // would take), so the witness UserSecret field does not change shape on
-// de-mock. Owner is public, so embedding it in the preimage leaks nothing.
-func WithdrawSecretForOwner(owner string) string {
-	return hash.SHA256Hex([]byte(withdrawSecretDomainTag + "|" + strings.TrimSpace(owner)))
+// de-mock. Owner/denom are public, so embedding them in the preimage leaks
+// nothing.
+func WithdrawSecretFor(owner, denom string) string {
+	return hash.SHA256Hex([]byte(
+		withdrawSecretDomainTag + "|" + strings.TrimSpace(owner) + "|" + strings.TrimSpace(denom),
+	))
 }

@@ -28,13 +28,14 @@ var ErrInsufficientOffchainBalance = errors.New("batch: insufficient off-chain b
 var ErrInvalidBuildInput = errors.New("batch: invalid build input")
 
 // INT-WD-NULLIFIER-peruser: khi P4 không truyền AccountSecrets cho một owner,
-// fallback dùng state.WithdrawSecretForOwner(owner) — secret MOCK per-owner —
-// thay cho literal "mock-user-secret" DÙNG CHUNG. Literal chung khiến hai owner
-// khác nhau đụng cùng nullifier khi nonce trùng (sau reset lockstep). Per-owner
-// cho mỗi owner một namespace chống-replay riêng, và vì determin theo owner nên
-// batch rebuild + gazk prover re-derive ra đúng cùng giá trị từ witness
-// UserSecret. Đây cũng là DE-MOCK SEAM: bước sau đổi nguồn secret sang
-// wallet-derived (ADR-036) mà không đụng NullifierFor hay prover.
+// fallback dùng state.WithdrawSecretFor(owner, denom) — secret MOCK
+// per-(owner,denom) — thay cho literal "mock-user-secret" DÙNG CHUNG. Literal
+// chung khiến khác owner (hoặc cùng owner khác denom — nonce là per-account nên
+// đều nonce=1) đụng cùng nullifier. Per-(owner,denom) cho mỗi account một
+// namespace chống-replay riêng, và vì determin theo (owner,denom) nên batch
+// rebuild + gazk prover re-derive ra đúng cùng giá trị từ witness UserSecret.
+// Đây cũng là DE-MOCK SEAM: bước sau đổi nguồn secret sang wallet-derived
+// (ADR-036) mà không đụng NullifierFor hay prover.
 
 // AccountSecret gắn một owner với userSecret. P4 BatchService nạp
 // secret từ keystore/wallet ngay tại thời điểm batch build — secret
@@ -195,7 +196,7 @@ func (b *LocalBuilder) Build(ctx context.Context, in BuildInput) (BuildOutput, e
 	withdrawals := make([]WithdrawalInput, 0, len(in.WithdrawRequests))
 	for i, req := range in.WithdrawRequests {
 		owner := strings.TrimSpace(req.Owner)
-		secret := resolveSecret(secrets, owner)
+		secret := resolveSecret(secrets, owner, req.Denom)
 
 		nullifier, err := state.NullifierFor(secret, req.Nonce)
 		if err != nil {
@@ -244,7 +245,7 @@ func (b *LocalBuilder) Build(ctx context.Context, in BuildInput) (BuildOutput, e
 		acc := ls.Account(p.owner, p.denom)
 		accounts = append(accounts, AccountWitnessSecret{
 			Owner:      p.owner,
-			UserSecret: resolveSecret(secrets, p.owner),
+			UserSecret: resolveSecret(secrets, p.owner, p.denom),
 			OldBalance: "0",
 			NewBalance: acc.Balance,
 			Denom:      p.denom,
@@ -302,16 +303,17 @@ func indexSecrets(in []AccountSecret) (map[string]string, error) {
 	return out, nil
 }
 
-// resolveSecret trả về secret cho owner. Nếu caller có truyền
-// AccountSecret, dùng giá trị đó; nếu không, fallback sang secret MOCK
-// per-owner state.WithdrawSecretForOwner(owner). Determinism: cùng owner luôn
-// cùng secret trong cùng chế độ (real vs mock) — request-time, batch rebuild và
-// prover re-derive khớp nhau.
-func resolveSecret(provided map[string]string, owner string) string {
+// resolveSecret trả về secret cho (owner, denom). Nếu caller có truyền
+// AccountSecret cho owner, dùng giá trị đó; nếu không, fallback sang secret
+// MOCK per-(owner,denom) state.WithdrawSecretFor(owner, denom). Denom cần vì
+// nonce là per-account (owner,denom) — cùng owner khác denom đều nonce=1, nếu
+// secret chỉ theo owner sẽ vẫn đụng. Determinism: cùng (owner,denom) luôn cùng
+// secret — request-time, batch rebuild và prover re-derive khớp nhau.
+func resolveSecret(provided map[string]string, owner, denom string) string {
 	if s, ok := provided[owner]; ok {
 		return s
 	}
-	return state.WithdrawSecretForOwner(owner)
+	return state.WithdrawSecretFor(owner, denom)
 }
 
 // collectParticipants trả về danh sách (owner, denom) duy nhất tham

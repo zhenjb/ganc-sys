@@ -130,9 +130,9 @@ func TestLocalBuilder_Build_CanonicalAlice_FallbackMockSecret(t *testing.T) {
 	if w.Nullifier == "" || w.Nullifier == "0xmocknullifier" {
 		t.Errorf("Nullifier with mock secret must be a real hash, got %q", w.Nullifier)
 	}
-	// Determinism: secret per-owner + nonce "1" luôn cho cùng nullifier, và
-	// witness UserSecret PHẢI là chính secret đó để prover re-derive khớp.
-	wantSecret := state.WithdrawSecretForOwner(w.Owner)
+	// Determinism: secret per-(owner,denom) + nonce "1" luôn cho cùng nullifier,
+	// và witness UserSecret PHẢI là chính secret đó để prover re-derive khớp.
+	wantSecret := state.WithdrawSecretFor(w.Owner, w.Denom)
 	expected, err := state.NullifierFor(wantSecret, "1")
 	if err != nil {
 		t.Fatalf("NullifierFor per-owner: %v", err)

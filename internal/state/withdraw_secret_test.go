@@ -7,19 +7,19 @@ import (
 	"github.com/zhenjb/ganc-sys/internal/state"
 )
 
-// TestWithdrawSecretForOwner_Deterministic locks the property the whole fix
-// relies on: the same owner always derives the same secret, so the
+// TestWithdrawSecretFor_Deterministic locks the property the whole fix relies
+// on: the same (owner, denom) always derives the same secret, so the
 // request-time nullifier, the batch-rebuilt nullifier and the gazk prover's
-// re-derivation (which reads UserSecret from the witness) all agree.
-func TestWithdrawSecretForOwner_Deterministic(t *testing.T) {
-	a := state.WithdrawSecretForOwner("cosmos1alice")
+// re-derivation (which reads UserSecret from the witness account) all agree.
+func TestWithdrawSecretFor_Deterministic(t *testing.T) {
+	a := state.WithdrawSecretFor("cosmos1alice", "uusdc")
 	for i := 0; i < 16; i++ {
-		if b := state.WithdrawSecretForOwner("cosmos1alice"); b != a {
+		if b := state.WithdrawSecretFor("cosmos1alice", "uusdc"); b != a {
 			t.Fatalf("non-deterministic: iter %d got %s, want %s", i, b, a)
 		}
 	}
 	// Surrounding whitespace must not fork the secret (HTTP bodies carry padding).
-	if state.WithdrawSecretForOwner("  cosmos1alice  ") != a {
+	if state.WithdrawSecretFor("  cosmos1alice  ", " uusdc ") != a {
 		t.Fatalf("whitespace changed the derived secret")
 	}
 	if !strings.HasPrefix(a, "0x") || len(a) != 66 {
@@ -27,49 +27,66 @@ func TestWithdrawSecretForOwner_Deterministic(t *testing.T) {
 	}
 }
 
-// TestWithdrawSecretForOwner_PerOwnerDistinct is the direct regression for the
-// reported bug: different owners must derive different secrets.
-func TestWithdrawSecretForOwner_PerOwnerDistinct(t *testing.T) {
-	alice := state.WithdrawSecretForOwner("cosmos1alice")
-	bob := state.WithdrawSecretForOwner("cosmos1bob")
-	if alice == bob {
-		t.Fatalf("distinct owners collided on the same secret: %s", alice)
+// TestWithdrawSecretFor_PerOwnerDistinct — different owners must derive
+// different secrets (cross-user collision regression).
+func TestWithdrawSecretFor_PerOwnerDistinct(t *testing.T) {
+	if state.WithdrawSecretFor("cosmos1alice", "uusdc") == state.WithdrawSecretFor("cosmos1bob", "uusdc") {
+		t.Fatal("distinct owners collided on the same secret")
 	}
 }
 
-// TestNullifier_CrossUserSameNonceNoCollision reproduces the exact failure
-// (Bob then Alice both withdrawing at nonce=1) and asserts it no longer
-// collides once each owner seeds its own secret. Before the fix both used the
-// shared "mock-user-secret" and produced the identical 0xac44… nullifier.
-func TestNullifier_CrossUserSameNonceNoCollision(t *testing.T) {
-	const nonce = "1"
+// TestWithdrawSecretFor_PerDenomDistinct — the SAME owner withdrawing two
+// different denoms must derive different secrets. This is the direct regression
+// for the reported bug: nonce is per-account (owner,denom), so both denoms get
+// nonce=1; only a denom-bound secret keeps their nullifiers apart.
+func TestWithdrawSecretFor_PerDenomDistinct(t *testing.T) {
+	if state.WithdrawSecretFor("cosmos1alice", "uatom") == state.WithdrawSecretFor("cosmos1alice", "uusdc") {
+		t.Fatal("same owner, different denom collided on the same secret")
+	}
+}
 
-	bobNull, err := state.NullifierFor(state.WithdrawSecretForOwner("cosmos1bob"), nonce)
+// TestNullifier_SameOwnerCrossDenomNoCollision reproduces the exact failure
+// (one user withdrawing uatom then uusdc, both at nonce=1) and asserts the
+// nullifiers no longer collide. Before the denom binding both resolved to the
+// per-owner secret and produced the identical nullifier.
+func TestNullifier_SameOwnerCrossDenomNoCollision(t *testing.T) {
+	const owner, nonce = "cosmos1alice", "1"
+
+	atom, err := state.NullifierFor(state.WithdrawSecretFor(owner, "uatom"), nonce)
+	if err != nil {
+		t.Fatalf("uatom nullifier: %v", err)
+	}
+	usdc, err := state.NullifierFor(state.WithdrawSecretFor(owner, "uusdc"), nonce)
+	if err != nil {
+		t.Fatalf("uusdc nullifier: %v", err)
+	}
+	if atom == usdc {
+		t.Fatalf("same owner cross-denom nullifier collision at nonce=%s: %s", nonce, atom)
+	}
+}
+
+// TestNullifier_CrossUserSameNonceNoCollision — different owners, same denom &
+// nonce must not collide either.
+func TestNullifier_CrossUserSameNonceNoCollision(t *testing.T) {
+	bob, err := state.NullifierFor(state.WithdrawSecretFor("cosmos1bob", "uosmo"), "1")
 	if err != nil {
 		t.Fatalf("bob nullifier: %v", err)
 	}
-	aliceNull, err := state.NullifierFor(state.WithdrawSecretForOwner("cosmos1alice"), nonce)
+	alice, err := state.NullifierFor(state.WithdrawSecretFor("cosmos1alice", "uosmo"), "1")
 	if err != nil {
 		t.Fatalf("alice nullifier: %v", err)
 	}
-	if bobNull == aliceNull {
-		t.Fatalf("cross-user nullifier collision at nonce=%s: %s", nonce, bobNull)
-	}
-
-	// Sanity: the old shared-secret path is what used to collide — prove both
-	// owners WOULD have collided under the pre-fix formula.
-	legacyBob, _ := state.NullifierFor("mock-user-secret", nonce)
-	legacyAlice, _ := state.NullifierFor("mock-user-secret", nonce)
-	if legacyBob != legacyAlice {
-		t.Fatalf("legacy shared secret unexpectedly differed: %s vs %s", legacyBob, legacyAlice)
+	if bob == alice {
+		t.Fatalf("cross-user nullifier collision: %s", bob)
 	}
 }
 
-// TestNullifier_SameOwnerSameNonceStillCollides confirms replay protection is
-// preserved WITHIN an owner: re-deriving for the same (owner, nonce) must yield
-// the same nullifier so ApplyWithdrawal still rejects a genuine replay.
-func TestNullifier_SameOwnerSameNonceStillCollides(t *testing.T) {
-	secret := state.WithdrawSecretForOwner("cosmos1alice")
+// TestNullifier_SameAccountSameNonceStillCollides confirms replay protection is
+// preserved WITHIN an account: re-deriving for the same (owner, denom, nonce)
+// must yield the same nullifier so ApplyWithdrawal still rejects a genuine
+// replay.
+func TestNullifier_SameAccountSameNonceStillCollides(t *testing.T) {
+	secret := state.WithdrawSecretFor("cosmos1alice", "uusdc")
 	first, err := state.NullifierFor(secret, "5")
 	if err != nil {
 		t.Fatalf("first: %v", err)
@@ -79,6 +96,6 @@ func TestNullifier_SameOwnerSameNonceStillCollides(t *testing.T) {
 		t.Fatalf("second: %v", err)
 	}
 	if first != second {
-		t.Fatalf("same owner+nonce must reproduce the nullifier: %s vs %s", first, second)
+		t.Fatalf("same account+nonce must reproduce the nullifier: %s vs %s", first, second)
 	}
 }

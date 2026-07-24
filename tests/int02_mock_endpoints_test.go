@@ -222,11 +222,12 @@ func TestINT02BuildBatchLocalContract(t *testing.T) {
 		t.Fatalf("expected witness owner=cosmos1alice, got %q", body.Witness.Accounts[0].Owner)
 	}
 
-	// INT-WD-NULLIFIER-peruser: witness UserSecret is now a PER-OWNER mock
-	// secret (was the shared literal "mock-user-secret"), so two owners can no
-	// longer collide on the same withdrawal nullifier.
-	if want := appstate.WithdrawSecretForOwner("cosmos1alice"); body.Witness.Accounts[0].UserSecret != want {
-		t.Fatalf("expected witness userSecret=%q (per-owner), got %q", want, body.Witness.Accounts[0].UserSecret)
+	// INT-WD-NULLIFIER-peruser: witness UserSecret is now a PER-(owner,denom)
+	// mock secret (was the shared literal "mock-user-secret"), so neither two
+	// owners nor the same owner's two denoms collide on the same nullifier.
+	acc0 := body.Witness.Accounts[0]
+	if want := appstate.WithdrawSecretFor(acc0.Owner, acc0.Denom); acc0.UserSecret != want {
+		t.Fatalf("expected witness userSecret=%q (per-owner,denom), got %q", want, acc0.UserSecret)
 	}
 
 	if body.Witness.Accounts[0].OldBalance != "0" {

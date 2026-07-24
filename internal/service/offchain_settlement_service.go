@@ -213,11 +213,12 @@ func (s *OffchainSettlementService) ApplyWithdrawRequest(
 	}
 
 	if strings.TrimSpace(userSecret) == "" {
-		// INT-WD-NULLIFIER-peruser: derive a per-owner mock secret instead of a
-		// single shared literal, so two owners never collide on the same
-		// nullifier. Deterministic, so the batch rebuild and the gazk prover
-		// re-derive the identical value from the witness UserSecret.
-		userSecret = appstate.WithdrawSecretForOwner(req.Owner)
+		// INT-WD-NULLIFIER-peruser: derive a per-(owner,denom) mock secret
+		// instead of a single shared literal, so neither two owners NOR the same
+		// owner's two denoms (both at nonce=1, nonce is per-account) collide on
+		// the same nullifier. Deterministic, so the batch rebuild and the gazk
+		// prover re-derive the identical value from the witness UserSecret.
+		userSecret = appstate.WithdrawSecretFor(req.Owner, req.Denom)
 	}
 
 	nullifier, err := appstate.NullifierFor(userSecret, req.Nonce)
@@ -838,7 +839,7 @@ func buildWitnessAccountsFromPendingTransitions(
 
 		accounts = append(accounts, appbatch.AccountWitnessSecret{
 			Owner:      balance.owner,
-			UserSecret: resolveAccountSecret(secrets, balance.owner),
+			UserSecret: resolveAccountSecret(secrets, balance.owner, balance.denom),
 			OldBalance: balance.oldBalance,
 			NewBalance: balance.newBalance,
 			// INT-MULTIDENOM: luồn denom xuống witness để WitnessBuilder tính
@@ -876,13 +877,14 @@ func indexAccountSecrets(accountSecrets []appbatch.AccountSecret) (map[string]st
 	return out, nil
 }
 
-func resolveAccountSecret(secrets map[string]string, owner string) string {
+func resolveAccountSecret(secrets map[string]string, owner, denom string) string {
 	if secret, ok := secrets[owner]; ok {
 		return secret
 	}
 
-	// INT-WD-NULLIFIER-peruser: per-owner mock secret (not a shared literal) so
-	// the witness UserSecret — and therefore the withdrawal nullifier the prover
-	// re-derives and the chain records — is unique per owner.
-	return appstate.WithdrawSecretForOwner(owner)
+	// INT-WD-NULLIFIER-peruser: per-(owner,denom) mock secret (not a shared
+	// literal) so the witness UserSecret — and therefore the withdrawal
+	// nullifier the prover re-derives and the chain records — is unique per
+	// (owner, denom). Denom matters because the withdrawal nonce is per-account.
+	return appstate.WithdrawSecretFor(owner, denom)
 }
