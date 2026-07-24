@@ -53,86 +53,116 @@ type availReserved struct {
 	reserved string
 }
 
-// SettleTradesOnce drains all pending fills and settles them, grouped per market
-// (each market is one batch — TradeApplier is single-market). Returns whether at
-// least one market batch settled, plus the first error encountered. Idle (no
-// fills) returns (false, nil).
+// SettleTradesOnce drains all pending fills and settles them ONE FILL PER BATCH,
+// in FIFO (matching) order. The gazk trade circuit is the canonical single-fill
+// prototype (exactly 2 orders + 1 fill per proof), so a batch carrying ≥2 fills is
+// rejected by the prover and re-enqueued forever (log "got 2/3/4"). Bounding each
+// proof to one fill — the trade analog of withdrawal's boundSingleWithdrawalPrefix
+// (1 withdrawal/batch) — keeps every proof within the circuit's shape; N fills drain
+// across N passes/batches/txs. Returns whether at least one fill settled, plus the
+// first error encountered. Idle (no fills) returns (false, nil).
+//
+// Ordering & causality: fills settle in drain (FIFO = matching) order because every
+// batch advances the SHARED off-chain root (fill i → root_i; fill i+1 builds from
+// root_i). A transient failure (apply/build/prove/submit) re-enqueues the failing
+// fill AND every fill after it, then stops the pass, so the retry preserves order and
+// the causal root chain. A deterministic data error (order data / unknown market)
+// drops just that fill — retrying would loop.
+//
+// Shared-order guard: an order's nullifier is consumed on-chain at most once (AGR-2b:
+// applySettlementUpdate marks every trade's orderNullifier used, and a reused or
+// in-batch-duplicate one is rejected — msg_submit_batch_proof.go). When one order
+// crosses several counterparties it appears in several fills; only the FIRST can
+// settle. Later fills referencing an already-settled order would hit
+// ErrOrderNullifierReused and loop, so they are dropped with a warning. Settling
+// those fully needs a multi-fill circuit or per-fill order nullifiers (role A/B —
+// out of scope; see docs/matching_orderbook/INT-TRD-1FILL-per-batch.md).
 func (s *RealOrderService) SettleTradesOnce(ctx context.Context) (bool, error) {
 	drained := s.queue.Drain()
 	if len(drained) == 0 {
 		return false, nil
 	}
 
-	byMarket := map[string][]types.Fill{}
-	marketIDs := make([]string, 0)
-	for _, f := range drained {
-		if _, ok := byMarket[f.Market]; !ok {
-			marketIDs = append(marketIDs, f.Market)
-		}
-		byMarket[f.Market] = append(byMarket[f.Market], f)
-	}
-	sort.Strings(marketIDs) // deterministic settle order
-
 	settledAny := false
 	var firstErr error
-	for _, id := range marketIDs {
-		fills := byMarket[id]
-		market, ok := s.markets.Get(id)
+	// Order hashes settled in THIS pass: a later fill sharing one of them cannot
+	// settle (its order nullifier is now spent on-chain), so it is dropped.
+	consumedOrders := make(map[string]bool, len(drained)*2)
+
+	for i, fill := range drained {
+		if consumedOrders[fill.MakerOrderHash] || consumedOrders[fill.TakerOrderHash] {
+			log.Printf("[trade-settlement] DROP trade=%s market=%s: order shared with an already-settled fill this pass — per-order nullifier is spent (1-fill circuit limit; see INT-TRD-1FILL-per-batch)",
+				fill.TradeID, fill.Market)
+			continue
+		}
+
+		market, ok := s.markets.Get(fill.Market)
 		if !ok {
-			// Unknown market — requeue and surface the error (should not happen).
-			s.queue.Enqueue(fills)
+			// Deterministic (unknown market) — drop, do not loop.
 			if firstErr == nil {
-				firstErr = fmt.Errorf("trade settlement: unknown market %q", id)
+				firstErr = fmt.Errorf("trade settlement: unknown market %q", fill.Market)
 			}
+			log.Printf("[trade-settlement] DROP trade=%s: unknown market %q", fill.TradeID, fill.Market)
 			continue
 		}
-		if err := s.settleMarket(ctx, market, fills); err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
+
+		requeue, err := s.settleOneFill(ctx, market, fill)
+		if err == nil {
+			settledAny = true
+			consumedOrders[fill.MakerOrderHash] = true
+			consumedOrders[fill.TakerOrderHash] = true
 			continue
 		}
-		settledAny = true
+		if firstErr == nil {
+			firstErr = err
+		}
+		if requeue {
+			// Transient: requeue this fill + all remaining (preserve FIFO + root
+			// causality — no later fill may settle ahead of this one), then stop.
+			s.queue.Enqueue(drained[i:])
+			return settledAny, firstErr
+		}
+		// Deterministic error — drop this fill, continue with the next.
 	}
 	return settledAny, firstErr
 }
 
-// settleMarket runs the full pipeline for one market's fills under the
-// single-writer lock. On failure after apply it rolls the manager back to the
-// pre-apply snapshot; on a transient prove/submit failure it also re-enqueues
-// the fills for retry. A deterministic build/data error is NOT re-enqueued (it
-// would loop) — it is logged via the returned error and the fills are dropped
-// from the queue (the matched book state is unaffected).
-func (s *RealOrderService) settleMarket(ctx context.Context, market types.Market, fills []types.Fill) (err error) {
+// settleOneFill runs the full build → prove → submit pipeline for EXACTLY ONE fill
+// (one batch, one proof, one tx) under the single-writer lock. On any post-apply
+// failure it rolls the manager back to the pre-apply snapshot. It NEVER touches the
+// queue — SettleTradesOnce owns requeue policy. `requeue` reports whether the failure
+// is transient (apply/build/prove/submit — the identical batch is worth retrying) vs
+// a deterministic data error (order data — retrying would loop).
+func (s *RealOrderService) settleOneFill(ctx context.Context, market types.Market, fill types.Fill) (requeue bool, err error) {
 	s.matchMu.Lock()
 	defer s.matchMu.Unlock()
 
+	fills := []types.Fill{fill}
 	book := s.books.Book(market.Market)
 	oldRoot := s.manager.Root()
 	snap := s.manager.Snapshot() // apply-level rollback point
 
 	commit, sides, witnessOrders, derr := s.orderDataForFillsLocked(book, fills)
 	if derr != nil {
-		return fmt.Errorf("trade settlement: order data: %w", derr) // data error — do not requeue
+		return false, fmt.Errorf("trade settlement: order data: %w", derr) // data error — do not requeue
 	}
 
 	accounts := touchedAccounts(fills, market, state.FeeAccountOwner)
 	oldBal := s.snapshotBalancesLocked(accounts)
 
 	// Apply: the only step that moves balances (consume reserved, credit
-	// counterparties + fee). On error it rolls the manager back itself; requeue.
+	// counterparties + fee). On error Apply rolls the manager back itself; the
+	// failure is transient (retry the identical batch).
 	res, aerr := state.NewTradeApplier("").Apply(s.manager, book, fills, market, sides)
 	if aerr != nil {
-		s.queue.Enqueue(fills)
-		return fmt.Errorf("trade settlement: apply: %w", aerr)
+		return true, fmt.Errorf("trade settlement: apply: %w", aerr)
 	}
 	newBal := s.snapshotBalancesLocked(accounts)
 
-	// rollbackRequeue restores balances and re-queues the fills for a retry.
-	rollbackRequeue := func(cause error, stage string) error {
+	// rollback restores balances (Apply succeeded) and marks the failure transient.
+	rollback := func(cause error, stage string) (bool, error) {
 		s.manager.Rollback(snap)
-		s.queue.Enqueue(fills)
-		return fmt.Errorf("trade settlement: %s: %w", stage, cause)
+		return true, fmt.Errorf("trade settlement: %s: %w", stage, cause)
 	}
 
 	upd, com, berr := s.builder.BuildTradeBatch(batch.TradeBatchInputs{
@@ -142,30 +172,30 @@ func (s *RealOrderService) settleMarket(ctx context.Context, market types.Market
 		Markets: s.markets,
 	})
 	if berr != nil {
-		return rollbackRequeue(berr, "build")
+		return rollback(berr, "build")
 	}
 
 	publicInputs, perr := batch.BuildPublicInputsWithTrades(upd, com)
 	if perr != nil {
-		return rollbackRequeue(perr, "public inputs")
+		return rollback(perr, "public inputs")
 	}
 
 	witness, werr := buildTradeWitness(oldRoot, res.NewRoot, com, fills, witnessOrders, accounts, oldBal, newBal)
 	if werr != nil {
-		return rollbackRequeue(werr, "witness")
+		return rollback(werr, "witness")
 	}
 
 	proof, prerr := s.tradeProver.ProveTrade(ctx, upd, com, witness, publicInputs)
 	if prerr != nil {
-		return rollbackRequeue(prerr, "prove")
+		return rollback(prerr, "prove")
 	}
 
 	txHash, accepted, serr := s.tradeSubmitter.SubmitTrade(ctx, upd, com, proof)
 	if serr != nil {
-		return rollbackRequeue(serr, "submit")
+		return rollback(serr, "submit")
 	}
 	if !accepted {
-		return rollbackRequeue(fmt.Errorf("batch %s not accepted", upd.BatchID), "submit")
+		return rollback(fmt.Errorf("batch %s not accepted", upd.BatchID), "submit")
 	}
 
 	// DB-1: the trade just advanced the SHARED manager root AND the on-chain root,
@@ -187,9 +217,9 @@ func (s *RealOrderService) settleMarket(ctx context.Context, market types.Market
 		s.tradeBatchRecorder.SaveLatestTradeBatch(upd, com, proof)
 	}
 
-	log.Printf("[trade-settlement] SETTLED batch=%s market=%s fills=%d newRoot=%s tx=%s",
-		upd.BatchID, market.Market, len(fills), res.NewRoot, txHash)
-	return nil
+	log.Printf("[trade-settlement] SETTLED batch=%s market=%s fills=1 newRoot=%s tx=%s",
+		upd.BatchID, market.Market, res.NewRoot, txHash)
+	return false, nil
 }
 
 // orderDataForFillsLocked rebuilds, for every order referenced by the fills, its

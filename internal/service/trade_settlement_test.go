@@ -182,3 +182,93 @@ func amt(t *testing.T, mgr *state.OffchainStateManager, owner, denom string) int
 	}
 	return n
 }
+
+// aliceBuyN is Alice's BUY 20@100 with an explicit nonce (distinct orderHash so
+// two of them rest as separate makers).
+func aliceBuyN(nonce string) types.SignedOrder {
+	o := aliceBuy()
+	o.Nonce = nonce
+	return o
+}
+
+// mustCreate signs and submits an order, failing the test on any rejection.
+func mustCreate(t *testing.T, svc *service.RealOrderService, o types.SignedOrder) {
+	t.Helper()
+	if _, err := svc.CreateOrder(context.Background(), signedOrder(t, o)); err != nil {
+		t.Fatalf("CreateOrder(%s %s@%s n%s): %v", o.Side, o.Qty, o.Price, o.Nonce, err)
+	}
+}
+
+// INT-TRD-1FILL-per-batch: multiple INDEPENDENT fills (no order shared across
+// fills) settle sequentially — one batch/proof/tx per fill — instead of piling
+// into one ≥2-fill batch that the canonical single-fill prover rejects ("got N").
+func TestSettleTradesMultipleIndependentFills(t *testing.T) {
+	svc, mgr := newRealService(t, []types.DepositRecord{
+		{DepositID: "d1", Owner: "cosmos1alice", Denom: "uusdc", Amount: "5000"},
+		{DepositID: "d2", Owner: "cosmos1bob", Denom: "uatom", Amount: "50"},
+	})
+	// Two independent buy/sell pairs → two fills with four distinct orders.
+	mustCreate(t, svc, aliceBuyN("1"))
+	mustCreate(t, svc, bobSell("100", "20", "1")) // crosses buy#1 → fill#1
+	mustCreate(t, svc, aliceBuyN("2"))
+	mustCreate(t, svc, bobSell("100", "20", "2")) // crosses buy#2 → fill#2
+	if svc.PendingFillCount() != 2 {
+		t.Fatalf("expected 2 queued fills, got %d", svc.PendingFillCount())
+	}
+	oldRoot := mgr.Root()
+
+	settled, err := svc.SettleTradesOnce(context.Background())
+	if err != nil {
+		t.Fatalf("SettleTradesOnce: %v", err)
+	}
+	if !settled {
+		t.Fatal("expected fills to settle")
+	}
+	if mgr.Root() == oldRoot {
+		t.Fatal("root did not advance after settle")
+	}
+	if svc.PendingFillCount() != 0 {
+		t.Fatalf("queue = %d after settle, want 0 (both fills drained)", svc.PendingFillCount())
+	}
+	// Both trades applied → Alice received the full 40 uatom; value is conserved.
+	assertAcct(t, mgr, "cosmos1alice", "uatom", "40", "")
+	if q := amt(t, mgr, "cosmos1alice", "uusdc") + amt(t, mgr, "cosmos1bob", "uusdc") + amt(t, mgr, state.FeeAccountOwner, "uusdc"); q != 5000 {
+		t.Fatalf("uusdc conservation broken: %d, want 5000", q)
+	}
+	if b := amt(t, mgr, "cosmos1alice", "uatom") + amt(t, mgr, "cosmos1bob", "uatom"); b != 50 {
+		t.Fatalf("uatom conservation broken: %d, want 50", b)
+	}
+}
+
+// INT-TRD-1FILL-per-batch (shared-order guard): a single taker crossing several
+// makers yields several fills that SHARE the taker order. Its order nullifier is
+// consumed on-chain exactly once, so only the FIRST fill can settle; the rest are
+// DROPPED (not re-enqueued → no loop), a documented limit of the 1-fill circuit +
+// per-order nullifier model. Fully settling them needs role A/B (multi-fill
+// circuit or per-fill nullifiers).
+func TestSettleTradesSharedTakerDropsExtraFills(t *testing.T) {
+	svc, mgr := newRealService(t, []types.DepositRecord{
+		{DepositID: "d1", Owner: "cosmos1alice", Denom: "uusdc", Amount: "5000"},
+		{DepositID: "d2", Owner: "cosmos1bob", Denom: "uatom", Amount: "50"},
+	})
+	mustCreate(t, svc, aliceBuyN("1"))            // maker#1: BUY 20@100
+	mustCreate(t, svc, aliceBuyN("2"))            // maker#2: BUY 20@100
+	mustCreate(t, svc, bobSell("100", "40", "1")) // taker SELL 40 crosses both → 2 fills share this order
+	if svc.PendingFillCount() != 2 {
+		t.Fatalf("expected 2 queued fills (taker crossed 2 makers), got %d", svc.PendingFillCount())
+	}
+
+	settled, err := svc.SettleTradesOnce(context.Background())
+	if err != nil {
+		t.Fatalf("SettleTradesOnce: %v", err)
+	}
+	if !settled {
+		t.Fatal("expected the first fill to settle")
+	}
+	// The shared-order fill was dropped, NOT re-enqueued → queue empty (no loop).
+	if svc.PendingFillCount() != 0 {
+		t.Fatalf("queue = %d, want 0 (shared-order fill dropped, not looped)", svc.PendingFillCount())
+	}
+	// Exactly ONE fill applied → Alice received 20 uatom (the second fill dropped).
+	assertAcct(t, mgr, "cosmos1alice", "uatom", "20", "")
+}
