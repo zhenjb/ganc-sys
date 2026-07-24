@@ -61,6 +61,11 @@ GAZK_TRADE_URL="${GAZK_TRADE_URL:-$GAZK_URL}"
 # cannot sign with a browser wallet (e.g. scripts using p3/.../sign_order).
 ORDER_SIG_MODE="${ORDER_SIG_MODE:-adr36}"
 
+# STP_MODE — Self-Trade Prevention policy when a new order would cross the
+# owner's OWN resting order: cancel-newest (default; cancels the just-placed
+# order), cancel-oldest (cancels the resting order), or cancel-both.
+STP_MODE="${STP_MODE:-cancel-newest}"
+
 # DEN-D1/DEN-D2: order-market registry seed. When BOTH are empty the backend uses
 # its built-in DefaultMarkets (uatom/uusdc/uosmo). To trade on a chain that funds
 # different denoms, point ORDER_MARKETS_FILE at a matching config, e.g.:
@@ -215,7 +220,7 @@ run_api() {
   TRADE_PROVER_MODE="$TRADE_PROVER_MODE" TRADE_SUBMIT_MODE="$TRADE_SUBMIT_MODE" \
   GAZK_TRADE_URL="$GAZK_TRADE_URL" \
   RELAYER_MODE=cosmos CHAIN_DEPOSIT_MODE=cosmos INDEXER_MODE=chain CHAIN_QUERY_MODE=cosmos \
-  ORDER_SIG_MODE="$ORDER_SIG_MODE" \
+  ORDER_SIG_MODE="$ORDER_SIG_MODE" STP_MODE="$STP_MODE" \
   CHAIN_BINARY="$CHAIN_BINARY" CHAIN_ID="$CHAIN_ID" \
   CHAIN_NODE="$CHAIN_NODE" CHAIN_RPC_URL="$CHAIN_RPC_URL" CHAIN_REST_URL="$CHAIN_REST_URL" \
   RELAYER_FROM="$RELAYER_FROM" CHAIN_KEYRING_BACKEND="$CHAIN_KEYRING_BACKEND" \

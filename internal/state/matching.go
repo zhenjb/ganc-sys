@@ -49,12 +49,54 @@ func TradeIDFor(market, makerOrderHash, takerOrderHash string, fillIndex uint64)
 	return hash.SHA256Hex([]byte(b.String()))
 }
 
-// MatchingEngine runs price-time matching over an Orderbook. Stateless — safe to
-// reuse across markets/batches.
-type MatchingEngine struct{}
+// StpMode is the Self-Trade Prevention policy applied when the best bid and best
+// ask belong to the SAME owner (a would-be wash trade). A crossed book can never
+// persist, so at least one of the two orders is always cancelled.
+type StpMode string
 
-// NewMatchingEngine returns a matching engine.
-func NewMatchingEngine() *MatchingEngine { return &MatchingEngine{} }
+const (
+	// StpCancelNewest cancels the just-arrived (higher-sequence) order and keeps
+	// the resting one. Default — protects standing liquidity.
+	StpCancelNewest StpMode = "cancel-newest"
+	// StpCancelOldest cancels the resting (lower-sequence) order and lets the new
+	// order proceed (match other owners / rest).
+	StpCancelOldest StpMode = "cancel-oldest"
+	// StpCancelBoth cancels both crossing orders.
+	StpCancelBoth StpMode = "cancel-both"
+)
+
+// ParseStpMode maps a config/env string to a StpMode. Empty or unrecognized
+// values fall back to cancel-newest (the safe, most common default).
+func ParseStpMode(s string) StpMode {
+	switch StpMode(strings.ToLower(strings.TrimSpace(s))) {
+	case StpCancelOldest:
+		return StpCancelOldest
+	case StpCancelBoth:
+		return StpCancelBoth
+	default:
+		return StpCancelNewest
+	}
+}
+
+// MatchingEngine runs price-time matching over an Orderbook, applying a
+// Self-Trade Prevention policy. Stateless w.r.t. the book — safe to reuse across
+// markets/batches.
+type MatchingEngine struct {
+	stp StpMode
+}
+
+// NewMatchingEngine returns a matching engine with the default STP policy
+// (cancel-newest).
+func NewMatchingEngine() *MatchingEngine { return &MatchingEngine{stp: StpCancelNewest} }
+
+// NewMatchingEngineWithMode returns a matching engine with an explicit STP
+// policy. An empty mode falls back to cancel-newest.
+func NewMatchingEngineWithMode(mode StpMode) *MatchingEngine {
+	if mode == "" {
+		mode = StpCancelNewest
+	}
+	return &MatchingEngine{stp: mode}
+}
 
 // Match repeatedly crosses the book's best bid and ask while
 // bestBid.price >= bestAsk.price, emitting one Fill per crossing and reducing
@@ -96,21 +138,40 @@ func (e *MatchingEngine) Match(book *Orderbook, market types.Market) ([]types.Fi
 			break
 		}
 
-		// Self-Trade Prevention (cancel-newest): a resting order must never fill
-		// against another order from the SAME owner (wash trade). When the best
-		// bid and best ask belong to the same owner, cancel the NEWER order (the
-		// higher sequence = the just-arrived aggressor), leaving the resting
-		// order in place, and re-evaluate the top of book. book.Cancel releases
-		// the cancelled order's reserved collateral. No fill is emitted.
+		// Self-Trade Prevention: a resting order must never fill against another
+		// order from the SAME owner (wash trade). A crossed book cannot persist,
+		// so the configured StpMode decides which order(s) to cancel. book.Cancel
+		// releases the cancelled order's reserved collateral (BookSet is wired to
+		// the manager). No fill is emitted; the loop re-evaluates the top of book.
 		if strings.TrimSpace(bid.Owner) == strings.TrimSpace(ask.Owner) {
-			victim := ask
-			if bid.Sequence > ask.Sequence {
-				victim = bid
+			newer, older := bid, ask
+			if ask.Sequence > bid.Sequence {
+				newer, older = ask, bid
 			}
-			if err := book.Cancel(victim.OrderHash); err != nil {
-				return nil, nil, fmt.Errorf("matching: STP cancel %s: %w", victim.OrderHash, err)
+			cancelOne := func(o RestingOrder) error {
+				if err := book.Cancel(o.OrderHash); err != nil {
+					return fmt.Errorf("matching: STP cancel %s: %w", o.OrderHash, err)
+				}
+				stpCancelled = append(stpCancelled, o)
+				return nil
 			}
-			stpCancelled = append(stpCancelled, victim)
+			switch e.stp {
+			case StpCancelOldest:
+				if err := cancelOne(older); err != nil {
+					return nil, nil, err
+				}
+			case StpCancelBoth:
+				if err := cancelOne(newer); err != nil {
+					return nil, nil, err
+				}
+				if err := cancelOne(older); err != nil {
+					return nil, nil, err
+				}
+			default: // StpCancelNewest
+				if err := cancelOne(newer); err != nil {
+					return nil, nil, err
+				}
+			}
 			continue
 		}
 

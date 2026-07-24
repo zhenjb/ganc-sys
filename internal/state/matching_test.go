@@ -296,6 +296,74 @@ func TestMatchStpFillsOtherOwnerThenCancelsRemainder(t *testing.T) {
 	}
 }
 
+// cancel-oldest: on a same-owner self-cross the RESTING (older) order is
+// cancelled and the NEW order survives (rests / matches others). Alice's bid
+// rests first; her crossing sell arrives → the bid (older) is cancelled, the
+// sell stays resting as an ask.
+func TestMatchStpCancelOldest(t *testing.T) {
+	b := NewOrderbook("ATOM/USDC", nil, nil)
+	place(t, b, "alice-buy", "alice", types.SideBuy, "100", "20")   // seq1 (older)
+	place(t, b, "alice-sell", "alice", types.SideSell, "100", "20") // seq2 (newer)
+
+	fills, cancelled, err := NewMatchingEngineWithMode(StpCancelOldest).Match(b, matchMarket())
+	if err != nil {
+		t.Fatalf("match: %v", err)
+	}
+	if len(fills) != 0 {
+		t.Fatalf("self-trade must produce 0 fills, got %d", len(fills))
+	}
+	if len(cancelled) != 1 || cancelled[0].OrderHash != "alice-buy" {
+		t.Fatalf("cancel-oldest must cancel the resting bid, got %+v", cancelled)
+	}
+	// The newer sell survives and rests as the best ask; the bid is gone.
+	if _, ok := b.BestBid(); ok {
+		t.Fatal("older bid must be cancelled")
+	}
+	if ask, ok := b.BestAsk(); !ok || ask.OrderHash != "alice-sell" {
+		t.Fatalf("newer sell must remain resting as ask, got %+v (ok=%v)", ask, ok)
+	}
+}
+
+// cancel-both: both crossing same-owner orders are cancelled; the book empties.
+func TestMatchStpCancelBoth(t *testing.T) {
+	b := NewOrderbook("ATOM/USDC", nil, nil)
+	place(t, b, "alice-buy", "alice", types.SideBuy, "100", "20")
+	place(t, b, "alice-sell", "alice", types.SideSell, "100", "20")
+
+	fills, cancelled, err := NewMatchingEngineWithMode(StpCancelBoth).Match(b, matchMarket())
+	if err != nil {
+		t.Fatalf("match: %v", err)
+	}
+	if len(fills) != 0 {
+		t.Fatalf("self-trade must produce 0 fills, got %d", len(fills))
+	}
+	if len(cancelled) != 2 {
+		t.Fatalf("cancel-both must cancel 2 orders, got %d", len(cancelled))
+	}
+	if _, ok := b.BestBid(); ok {
+		t.Fatal("bid must be cancelled")
+	}
+	if _, ok := b.BestAsk(); ok {
+		t.Fatal("ask must be cancelled")
+	}
+}
+
+func TestParseStpMode(t *testing.T) {
+	cases := map[string]StpMode{
+		"":               StpCancelNewest,
+		"cancel-newest":  StpCancelNewest,
+		"CANCEL-NEWEST":  StpCancelNewest,
+		" cancel-oldest ": StpCancelOldest,
+		"cancel-both":    StpCancelBoth,
+		"garbage":        StpCancelNewest, // unknown → default
+	}
+	for in, want := range cases {
+		if got := ParseStpMode(in); got != want {
+			t.Errorf("ParseStpMode(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestMatchMarketMismatch(t *testing.T) {
 	b := NewOrderbook("ATOM/USDC", nil, nil)
 	m := matchMarket()

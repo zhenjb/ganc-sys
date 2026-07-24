@@ -354,7 +354,9 @@ func NewRealOrderService(manager *state.OffchainStateManager, markets []types.Ma
 		manager:        manager,
 		nullifiers:     nullifiers,
 		trades:         NewInMemoryTradeStore(),
-		engine:         state.NewMatchingEngine(),
+		// STP_MODE selects the Self-Trade Prevention policy: "cancel-newest"
+		// (default), "cancel-oldest", or "cancel-both". Empty/unknown → default.
+		engine:         state.NewMatchingEngineWithMode(state.ParseStpMode(os.Getenv("STP_MODE"))),
 		queue:          NewInMemoryFillQueue(),
 		// INT-2SEQ: đường trade mint batchId dưới namespace "trade-" để không đụng
 		// namespace "core-" của đường core (SnapshotBuilder) trên cùng chain.
