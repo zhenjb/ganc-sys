@@ -66,6 +66,10 @@ const (
 	ReasonDuplicateOrder = "duplicate_order"
 	// ReasonOwnerRequired — DELETE /api/order/{id} was called without ?owner=.
 	ReasonOwnerRequired = "owner_required"
+	// ReasonSelfTrade — the order would fill against the owner's own resting
+	// order (wash trade). Blocked by Self-Trade Prevention (cancel-newest): the
+	// just-submitted order is cancelled and its reserve released. HTTP 400.
+	ReasonSelfTrade = "self_trade"
 )
 
 // OrderRejectedError is a client-input rejection (HTTP 400) carrying a stable
@@ -409,7 +413,7 @@ func (s *RealOrderService) RunMatchingOnce() (int, error) {
 	defer s.matchMu.Unlock()
 	total := 0
 	for _, m := range s.markets.List() {
-		fills, err := s.matchAndCollectLocked(m)
+		fills, _, err := s.matchAndCollectLocked(m)
 		if err != nil {
 			return total, fmt.Errorf("order service: match %s: %w", m.Market, err)
 		}
@@ -431,17 +435,20 @@ func (s *RealOrderService) PendingFillCount() int { return s.queue.Len() }
 // determinism — the ZK proof must reproduce the exact fill sequence). It does
 // NOT touch balances: reserved collateral of filled orders stays locked until
 // on-chain settle (STATE-T06); matching only mutates the book via Reduce.
-func (s *RealOrderService) matchAndCollectLocked(market types.Market) ([]types.Fill, error) {
+func (s *RealOrderService) matchAndCollectLocked(market types.Market) ([]types.Fill, []state.RestingOrder, error) {
 	book := s.books.Book(market.Market)
-	fills, err := s.engine.Match(book, market)
+	fills, stpCancelled, err := s.engine.Match(book, market)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(fills) > 0 {
 		s.trades.Record(fills) // permanent history
 		s.queue.Enqueue(fills) // settlement work-list (INT-T06)
 	}
-	return fills, nil
+	// STP-cancelled orders already had their reserve released by book.Cancel
+	// (BookSet is wired to the manager). Nothing to release here; the list is
+	// returned so CreateOrder can surface a self_trade rejection for the caller.
+	return fills, stpCancelled, nil
 }
 
 // orderStatusLocked reports an order's post-match fill state (called with matchMu
@@ -510,9 +517,43 @@ func (s *RealOrderService) CreateOrder(_ context.Context, order types.SignedOrde
 	// order from the book, its data is only available here.
 	s.orderRecords[verdict.OrderHash] = orderRecord{order: order, sequence: resting.Sequence}
 
-	if _, err := s.matchAndCollectLocked(market); err != nil {
+	_, stpCancelled, err := s.matchAndCollectLocked(market)
+	if err != nil {
 		s.matchMu.Unlock()
 		return types.OrderResponse{}, fmt.Errorf("order service: match: %w", err)
+	}
+	// Self-Trade Prevention: if THIS order was cancelled because it would have
+	// filled against the owner's own resting order, surface it distinctly instead
+	// of letting orderStatusLocked mis-read "gone from book" as "fully filled".
+	// Its reserve was already released by book.Cancel. A zero-fill self-cross is a
+	// clean rejection; a partial fill against OTHER owners before the self-cross is
+	// reported as cancelled with Filled>0 (those fills settle normally).
+	for _, v := range stpCancelled {
+		if v.OrderHash != verdict.OrderHash {
+			continue
+		}
+		s.matchMu.Unlock()
+		filledSelf, ferr := state.SubAmount(order.Qty, v.Remaining)
+		if ferr != nil {
+			filledSelf = "0"
+		}
+		if filledSelf == "0" {
+			return types.OrderResponse{}, &OrderRejectedError{
+				Reason: ReasonSelfTrade,
+				Detail: "order would self-trade with your own resting order",
+			}
+		}
+		return types.OrderResponse{
+			Order:  order,
+			Status: types.OrderStatusCancelled,
+			State: types.OrderState{
+				OrderID:   orderIDFromHash(verdict.OrderHash),
+				OrderHash: verdict.OrderHash,
+				Status:    types.OrderStatusCancelled,
+				Remaining: "0",
+				Filled:    filledSelf,
+			},
+		}, nil
 	}
 	// Reflect any immediate fill in the response (open / partial / filled).
 	remaining, filled, status := s.orderStatusLocked(book, verdict.OrderHash, order.Qty)

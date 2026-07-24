@@ -61,7 +61,7 @@ func TestTradeApplyCanonicalConservation(t *testing.T) {
 
 	rootBefore := m.Root()
 
-	fills, err := NewMatchingEngine().Match(book, market)
+	fills, _, err := NewMatchingEngine().Match(book, market)
 	if err != nil {
 		t.Fatalf("match: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestTradeApplyRollsBackOnFailure(t *testing.T) {
 	// Seller under-reserves (10) but sells 20 → apply's seller consume will fail.
 	placeReserved(t, book, "bob", "bob", types.SideSell, "100", "20", "uatom", "10")
 
-	fills, err := NewMatchingEngine().Match(book, market)
+	fills, _, err := NewMatchingEngine().Match(book, market)
 	if err != nil {
 		t.Fatalf("match: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestTradeApplyPartialFillKeepsTakerReserved(t *testing.T) {
 	// alice buys 20 @100 (taker). reserve quote = ceil(2000)+ceil(2000*100/10000)=2020.
 	placeReserved(t, book, "alice", "alice", types.SideBuy, "100", "20", "uusdc", "2020")
 
-	fills, err := NewMatchingEngine().Match(book, market)
+	fills, _, err := NewMatchingEngine().Match(book, market)
 	if err != nil {
 		t.Fatalf("match: %v", err)
 	}

@@ -82,7 +82,7 @@ func TestTradeVectorsCanonicalReproducible(t *testing.T) {
 		}
 	}
 
-	fills, err := state.NewMatchingEngine().Match(book, market)
+	fills, _, err := state.NewMatchingEngine().Match(book, market)
 	if err != nil {
 		t.Fatalf("match: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestTradeVectorsFailures(t *testing.T) {
 				t.Fatalf("non-crossing order %d should validate: %s", i, v.Reason)
 			}
 		}
-		fills, err := state.NewMatchingEngine().Match(book, fv.Market)
+		fills, _, err := state.NewMatchingEngine().Match(book, fv.Market)
 		if err != nil {
 			t.Fatalf("match: %v", err)
 		}

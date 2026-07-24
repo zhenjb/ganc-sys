@@ -42,7 +42,7 @@ func TestMatchCanonicalAliceBuyBobSell(t *testing.T) {
 	place(t, b, "alice-buy", "alice", types.SideBuy, "100", "20")
 	place(t, b, "bob-sell", "bob", types.SideSell, "100", "20")
 
-	fills, err := NewMatchingEngine().Match(b, matchMarket())
+	fills, _, err := NewMatchingEngine().Match(b, matchMarket())
 	if err != nil {
 		t.Fatalf("match: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestMatchExecutesAtMakerPrice(t *testing.T) {
 	place(t, b, "bob-sell", "bob", types.SideSell, "100", "10") // maker (rests first)
 	place(t, b, "alice-buy", "alice", types.SideBuy, "105", "10") // taker, crosses up
 
-	fills, err := NewMatchingEngine().Match(b, matchMarket())
+	fills, _, err := NewMatchingEngine().Match(b, matchMarket())
 	if err != nil {
 		t.Fatalf("match: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestMatchPartialFillAcrossLevels(t *testing.T) {
 	place(t, b, "carol", "carol", types.SideSell, "101", "12") // maker seq2
 	place(t, b, "alice", "alice", types.SideBuy, "105", "20")  // taker seq3, sweeps both
 
-	fills, err := NewMatchingEngine().Match(b, matchMarket())
+	fills, _, err := NewMatchingEngine().Match(b, matchMarket())
 	if err != nil {
 		t.Fatalf("match: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestMatchTakerRemainderRests(t *testing.T) {
 	place(t, b, "bob", "bob", types.SideSell, "100", "5")
 	place(t, b, "alice", "alice", types.SideBuy, "100", "12") // wants 12, only 5 available
 
-	fills, err := NewMatchingEngine().Match(b, matchMarket())
+	fills, _, err := NewMatchingEngine().Match(b, matchMarket())
 	if err != nil {
 		t.Fatalf("match: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestMatchNonCrossingNoFills(t *testing.T) {
 	place(t, b, "alice", "alice", types.SideBuy, "99", "10")
 	place(t, b, "bob", "bob", types.SideSell, "100", "10")
 
-	fills, err := NewMatchingEngine().Match(b, matchMarket())
+	fills, _, err := NewMatchingEngine().Match(b, matchMarket())
 	if err != nil {
 		t.Fatalf("match: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestMatchDeterministic(t *testing.T) {
 		place(t, b, "dave", "dave", types.SideSell, "102", "5")
 		place(t, b, "alice", "alice", types.SideBuy, "105", "20")
 		place(t, b, "erin", "erin", types.SideBuy, "101", "10")
-		f, err := NewMatchingEngine().Match(b, matchMarket())
+		f, _, err := NewMatchingEngine().Match(b, matchMarket())
 		if err != nil {
 			t.Fatalf("match: %v", err)
 		}
@@ -212,11 +212,95 @@ func TestTradeIDForDeterministicAndSensitive(t *testing.T) {
 }
 
 // Market mismatch between engine config and book is an error.
+// Self-Trade Prevention (cancel-newest): a resting order must never fill against
+// another order from the SAME owner. Alice's bid rests first (maker); Alice's own
+// crossing sell arrives → the NEWER order (the sell) is cancelled, no fill, and
+// the resting bid stays. Returned in the STP-cancelled list.
+func TestMatchStpCancelNewestOnSelfCross(t *testing.T) {
+	b := NewOrderbook("ATOM/USDC", nil, nil)
+	place(t, b, "alice-buy", "alice", types.SideBuy, "100", "20")   // rests first (seq1)
+	place(t, b, "alice-sell", "alice", types.SideSell, "100", "20") // same owner, crosses (seq2)
+
+	fills, cancelled, err := NewMatchingEngine().Match(b, matchMarket())
+	if err != nil {
+		t.Fatalf("match: %v", err)
+	}
+	if len(fills) != 0 {
+		t.Fatalf("self-trade must produce 0 fills, got %d: %+v", len(fills), fills)
+	}
+	if len(cancelled) != 1 {
+		t.Fatalf("want 1 STP-cancelled order, got %d", len(cancelled))
+	}
+	// cancel-newest → the newer order (alice-sell, seq2) is the victim.
+	if cancelled[0].OrderHash != "alice-sell" {
+		t.Fatalf("cancel-newest must cancel the newer order, got %s", cancelled[0].OrderHash)
+	}
+	if cancelled[0].Remaining != "20" {
+		t.Fatalf("cancelled order remaining (un-filled qty) = %s, want 20", cancelled[0].Remaining)
+	}
+	// The older bid stays resting; the cancelled ask is gone.
+	if _, ok := b.BestBid(); !ok {
+		t.Fatal("older resting bid must remain")
+	}
+	if _, ok := b.BestAsk(); ok {
+		t.Fatal("cancelled ask must be gone from the book")
+	}
+}
+
+// STP must NOT affect orders from DIFFERENT owners — a normal cross still fills,
+// and no order is STP-cancelled.
+func TestMatchStpLeavesDistinctOwnersUntouched(t *testing.T) {
+	b := NewOrderbook("ATOM/USDC", nil, nil)
+	place(t, b, "alice-buy", "alice", types.SideBuy, "100", "20")
+	place(t, b, "bob-sell", "bob", types.SideSell, "100", "20")
+
+	fills, cancelled, err := NewMatchingEngine().Match(b, matchMarket())
+	if err != nil {
+		t.Fatalf("match: %v", err)
+	}
+	if len(fills) != 1 {
+		t.Fatalf("distinct owners must fill: want 1 fill, got %d", len(fills))
+	}
+	if len(cancelled) != 0 {
+		t.Fatalf("distinct owners must NOT trigger STP, got %d cancelled", len(cancelled))
+	}
+}
+
+// cancel-newest must fill against OTHER owners FIRST, then cancel only the
+// self-crossing remainder. Alice's aggressive sell (40) fills Bob's better bid
+// @100 (20), then its 20-remainder would cross Alice's own bid @99 → STP cancels
+// just the remainder. Result: 1 fill (bob×alice), alice-sell cancelled w/ rem=20.
+func TestMatchStpFillsOtherOwnerThenCancelsRemainder(t *testing.T) {
+	b := NewOrderbook("ATOM/USDC", nil, nil)
+	place(t, b, "alice-buy", "alice", types.SideBuy, "99", "20")   // seq1 (Alice resting bid, lower)
+	place(t, b, "bob-buy", "bob", types.SideBuy, "100", "20")      // seq2 (Bob bid, better price)
+	place(t, b, "alice-sell", "alice", types.SideSell, "98", "40") // seq3 (Alice aggressive sell)
+
+	fills, cancelled, err := NewMatchingEngine().Match(b, matchMarket())
+	if err != nil {
+		t.Fatalf("match: %v", err)
+	}
+	// Bob's better bid fills first (maker price 100, qty 20).
+	if len(fills) != 1 {
+		t.Fatalf("want 1 fill (bob × alice), got %d: %+v", len(fills), fills)
+	}
+	if fills[0].Buyer != "bob" || fills[0].Seller != "alice" || fills[0].Qty != "20" {
+		t.Fatalf("fill must be bob buys 20 from alice, got %+v", fills[0])
+	}
+	// The remaining 20 of alice-sell would cross Alice's own bid → STP-cancelled.
+	if len(cancelled) != 1 || cancelled[0].OrderHash != "alice-sell" {
+		t.Fatalf("expected alice-sell remainder STP-cancelled, got %+v", cancelled)
+	}
+	if cancelled[0].Remaining != "20" {
+		t.Fatalf("cancelled remainder = %s, want 20", cancelled[0].Remaining)
+	}
+}
+
 func TestMatchMarketMismatch(t *testing.T) {
 	b := NewOrderbook("ATOM/USDC", nil, nil)
 	m := matchMarket()
 	m.Market = "OSMO/USDC"
-	if _, err := NewMatchingEngine().Match(b, m); err == nil {
+	if _, _, err := NewMatchingEngine().Match(b, m); err == nil {
 		t.Fatal("expected market-mismatch error")
 	}
 }

@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/zhenjb/ganc-sys/internal/service"
@@ -23,6 +24,63 @@ func bobSell(price, qty, nonce string) types.SignedOrder {
 	return types.SignedOrder{
 		Owner: "cosmos1bob", Market: "ATOM/USDC", Side: types.SideSell,
 		Price: price, Qty: qty, Expiry: "2000000", Nonce: nonce,
+	}
+}
+
+// Self-Trade Prevention over the service: Alice places a BUY then a crossing
+// SELL. The SELL would fill against her OWN resting bid → STP (cancel-newest)
+// rejects it with reason self_trade, releases its uatom collateral, and records
+// no trade. Her original bid stays resting.
+func TestCreateOrderRejectsSelfTrade(t *testing.T) {
+	ctx := context.Background()
+	svc, mgr := newRealService(t, []types.DepositRecord{
+		{DepositID: "d1", Owner: "cosmos1alice", Denom: "uusdc", Amount: "5000"},
+		{DepositID: "d2", Owner: "cosmos1alice", Denom: "uatom", Amount: "50"},
+	})
+
+	// Alice buys 20 @ 100 → rests (reserves uusdc).
+	if _, err := svc.CreateOrder(ctx, signedOrder(t, aliceBuy())); err != nil {
+		t.Fatalf("alice buy: %v", err)
+	}
+
+	// Alice sells 20 @ 100 → would cross her own bid → STP self_trade rejection.
+	aliceSell := types.SignedOrder{
+		Owner: "cosmos1alice", Market: "ATOM/USDC", Side: types.SideSell,
+		Price: "100", Qty: "20", Expiry: "2000000", Nonce: "2",
+	}
+	_, err := svc.CreateOrder(ctx, signedOrder(t, aliceSell))
+	var rej *service.OrderRejectedError
+	if !errors.As(err, &rej) {
+		t.Fatalf("want *OrderRejectedError, got %v", err)
+	}
+	if rej.Reason != service.ReasonSelfTrade {
+		t.Fatalf("reject reason = %q, want %q", rej.Reason, service.ReasonSelfTrade)
+	}
+
+	// The self-crossing sell did NOT rest — only the original bid remains open.
+	open := svc.ListOpenOrders(ctx, "cosmos1alice").OpenOrders
+	if len(open) != 1 {
+		t.Fatalf("only the resting bid should remain, got %d open orders", len(open))
+	}
+	if open[0].Side != types.SideBuy {
+		t.Fatalf("remaining open order must be the buy, got side %q", open[0].Side)
+	}
+
+	// The sell's uatom collateral was released by book.Cancel: none locked, full available.
+	uatom := mgr.Account("cosmos1alice", "uatom")
+	if uatom.Reserved != "" && uatom.Reserved != "0" {
+		t.Fatalf("uatom reserved after STP = %q, want none (released)", uatom.Reserved)
+	}
+	if uatom.Balance != "50" {
+		t.Fatalf("uatom available after STP = %q, want 50 (untouched)", uatom.Balance)
+	}
+
+	// No self-trade recorded, nothing queued for settlement.
+	if n := len(svc.ListTrades(ctx, "ATOM/USDC").Fills); n != 0 {
+		t.Fatalf("self-trade must not produce a trade, got %d", n)
+	}
+	if n := svc.PendingFillCount(); n != 0 {
+		t.Fatalf("no fill should be queued, got %d", n)
 	}
 }
 

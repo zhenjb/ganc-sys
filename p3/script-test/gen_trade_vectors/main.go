@@ -87,7 +87,7 @@ func main() {
 	})
 	oldRoot := mgr.Root()
 
-	fills, err := state.NewMatchingEngine().Match(book, market)
+	fills, _, err := state.NewMatchingEngine().Match(book, market)
 	if err != nil {
 		die("match: %v", err)
 	}

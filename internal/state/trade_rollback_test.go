@@ -33,7 +33,7 @@ func TestTradeRollbackFullFillRestoresBaseline(t *testing.T) {
 	baseRoot := baseline.Root()
 
 	// Match + apply (mutates manager balances/reserved + book + fee account).
-	fills, err := NewMatchingEngine().Match(book, matchMarket())
+	fills, _, err := NewMatchingEngine().Match(book, matchMarket())
 	if err != nil {
 		t.Fatalf("match: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestTradeRollbackIsIdempotent(t *testing.T) {
 	baseline := CaptureTradeBaseline(m, book, nullifiers)
 	baseRoot := baseline.Root()
 
-	fills, _ := NewMatchingEngine().Match(book, matchMarket())
+	fills, _, _ := NewMatchingEngine().Match(book, matchMarket())
 	_, _ = NewTradeApplier("").Apply(m, book, fills, matchMarket(), tradeSides)
 
 	tr := NewTradeRollback(nulls)
@@ -121,7 +121,7 @@ func TestTradeRollbackPartialFill(t *testing.T) {
 	m, book, nulls, nullifiers := setupTradeScenario(t, "8") // bob only sells 8
 	baseline := CaptureTradeBaseline(m, book, nullifiers)
 
-	fills, err := NewMatchingEngine().Match(book, matchMarket())
+	fills, _, err := NewMatchingEngine().Match(book, matchMarket())
 	if err != nil {
 		t.Fatalf("match: %v", err)
 	}

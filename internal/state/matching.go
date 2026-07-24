@@ -64,12 +64,16 @@ func NewMatchingEngine() *MatchingEngine { return &MatchingEngine{} }
 // market supplies the fee bps and must match the book's market. The engine
 // mutates book via Reduce; callers that need the pre-match book (rollback) must
 // snapshot beforehand — book rollback integration is STATE-T08/T10.
-func (e *MatchingEngine) Match(book *Orderbook, market types.Market) ([]types.Fill, error) {
+func (e *MatchingEngine) Match(book *Orderbook, market types.Market) ([]types.Fill, []RestingOrder, error) {
 	if strings.TrimSpace(market.Market) != book.Market() {
-		return nil, fmt.Errorf("matching: market %q does not match book %q", market.Market, book.Market())
+		return nil, nil, fmt.Errorf("matching: market %q does not match book %q", market.Market, book.Market())
 	}
 
 	fills := make([]types.Fill, 0)
+	// stpCancelled collects orders removed by Self-Trade Prevention (STP) so the
+	// caller can reflect them in the API response. book.Cancel already released
+	// each cancelled order's reserved collateral (BookSet is wired to the manager).
+	var stpCancelled []RestingOrder
 	var fillIndex uint64
 
 	for {
@@ -81,24 +85,42 @@ func (e *MatchingEngine) Match(book *Orderbook, market types.Market) ([]types.Fi
 
 		bidPrice, err := parsePositiveDecimal(bid.Price)
 		if err != nil {
-			return nil, fmt.Errorf("matching: bid price %q: %w", bid.Price, err)
+			return nil, nil, fmt.Errorf("matching: bid price %q: %w", bid.Price, err)
 		}
 		askPrice, err := parsePositiveDecimal(ask.Price)
 		if err != nil {
-			return nil, fmt.Errorf("matching: ask price %q: %w", ask.Price, err)
+			return nil, nil, fmt.Errorf("matching: ask price %q: %w", ask.Price, err)
 		}
 		// Cross condition: highest bid must reach the lowest ask.
 		if cmpDecimal(bidPrice, askPrice) < 0 {
 			break
 		}
 
+		// Self-Trade Prevention (cancel-newest): a resting order must never fill
+		// against another order from the SAME owner (wash trade). When the best
+		// bid and best ask belong to the same owner, cancel the NEWER order (the
+		// higher sequence = the just-arrived aggressor), leaving the resting
+		// order in place, and re-evaluate the top of book. book.Cancel releases
+		// the cancelled order's reserved collateral. No fill is emitted.
+		if strings.TrimSpace(bid.Owner) == strings.TrimSpace(ask.Owner) {
+			victim := ask
+			if bid.Sequence > ask.Sequence {
+				victim = bid
+			}
+			if err := book.Cancel(victim.OrderHash); err != nil {
+				return nil, nil, fmt.Errorf("matching: STP cancel %s: %w", victim.OrderHash, err)
+			}
+			stpCancelled = append(stpCancelled, victim)
+			continue
+		}
+
 		bidRem, err := parsePositiveDecimal(bid.Remaining)
 		if err != nil {
-			return nil, fmt.Errorf("matching: bid remaining %q: %w", bid.Remaining, err)
+			return nil, nil, fmt.Errorf("matching: bid remaining %q: %w", bid.Remaining, err)
 		}
 		askRem, err := parsePositiveDecimal(ask.Remaining)
 		if err != nil {
-			return nil, fmt.Errorf("matching: ask remaining %q: %w", ask.Remaining, err)
+			return nil, nil, fmt.Errorf("matching: ask remaining %q: %w", ask.Remaining, err)
 		}
 		fillDec := minDecimal(bidRem, askRem)
 		fillQty := fillDec.String()
@@ -138,14 +160,14 @@ func (e *MatchingEngine) Match(book *Orderbook, market types.Market) ([]types.Fi
 
 		// Reduce both sides; the fully-filled side(s) leave the book.
 		if _, _, err := book.Reduce(bid.OrderHash, fillQty); err != nil {
-			return nil, fmt.Errorf("matching: reduce bid %s: %w", bid.OrderHash, err)
+			return nil, nil, fmt.Errorf("matching: reduce bid %s: %w", bid.OrderHash, err)
 		}
 		if _, _, err := book.Reduce(ask.OrderHash, fillQty); err != nil {
-			return nil, fmt.Errorf("matching: reduce ask %s: %w", ask.OrderHash, err)
+			return nil, nil, fmt.Errorf("matching: reduce ask %s: %w", ask.OrderHash, err)
 		}
 	}
 
-	return fills, nil
+	return fills, stpCancelled, nil
 }
 
 // minDecimal returns the smaller of a and b (a if equal).
