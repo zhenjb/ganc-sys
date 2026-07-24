@@ -27,20 +27,14 @@ var ErrInsufficientOffchainBalance = errors.New("batch: insufficient off-chain b
 // "user gửi sai" vs "user không đủ tiền".
 var ErrInvalidBuildInput = errors.New("batch: invalid build input")
 
-// mvpMockSecret là giá trị mặc định khi P4 không truyền AccountSecrets
-// cho một owner trong batch. Chuỗi literal "mock-user-secret" được lock
-// trong Agreements (canonical mock Witness JSON) — đổi giá trị này
-// đồng nghĩa break canonical vector và các test INT-02/INT-07 của P4.
-//
-// Cho phép pipeline MVP chạy end-to-end ngay cả khi P4 chưa wire
-// keystore/wallet thật. Hệ quả: mọi owner không có entry trong
-// AccountSecrets sẽ DÙNG CHUNG một secret — chấp nhận được cho mock
-// single-account Alice; cấm dùng cho production hoặc multi-owner thật.
-//
-// KHI nào xoá: ngay khi P5 wallet hoặc P4 keystore cung cấp được secret
-// thật. STATE-14 OffchainStateManager (P2 priority) sẽ kéo theo việc
-// P4 buộc phải truyền secret tử tế.
-const mvpMockSecret = "mock-user-secret"
+// INT-WD-NULLIFIER-peruser: khi P4 không truyền AccountSecrets cho một owner,
+// fallback dùng state.WithdrawSecretForOwner(owner) — secret MOCK per-owner —
+// thay cho literal "mock-user-secret" DÙNG CHUNG. Literal chung khiến hai owner
+// khác nhau đụng cùng nullifier khi nonce trùng (sau reset lockstep). Per-owner
+// cho mỗi owner một namespace chống-replay riêng, và vì determin theo owner nên
+// batch rebuild + gazk prover re-derive ra đúng cùng giá trị từ witness
+// UserSecret. Đây cũng là DE-MOCK SEAM: bước sau đổi nguồn secret sang
+// wallet-derived (ADR-036) mà không đụng NullifierFor hay prover.
 
 // AccountSecret gắn một owner với userSecret. P4 BatchService nạp
 // secret từ keystore/wallet ngay tại thời điểm batch build — secret
@@ -309,14 +303,15 @@ func indexSecrets(in []AccountSecret) (map[string]string, error) {
 }
 
 // resolveSecret trả về secret cho owner. Nếu caller có truyền
-// AccountSecret, dùng giá trị đó; nếu không, fallback sang literal
-// mvpMockSecret. Determinism: cùng owner luôn cùng secret trong cùng
-// chế độ (real vs mock).
+// AccountSecret, dùng giá trị đó; nếu không, fallback sang secret MOCK
+// per-owner state.WithdrawSecretForOwner(owner). Determinism: cùng owner luôn
+// cùng secret trong cùng chế độ (real vs mock) — request-time, batch rebuild và
+// prover re-derive khớp nhau.
 func resolveSecret(provided map[string]string, owner string) string {
 	if s, ok := provided[owner]; ok {
 		return s
 	}
-	return mvpMockSecret
+	return state.WithdrawSecretForOwner(owner)
 }
 
 // collectParticipants trả về danh sách (owner, denom) duy nhất tham

@@ -17,8 +17,6 @@ var ErrOffchainSettlementUnavailable = errors.New("offchain settlement service u
 var ErrNoPendingSettlementOperations = errors.New("offchain settlement has no pending operations")
 var ErrInvalidPendingSettlement = errors.New("offchain settlement pending operations invalid")
 
-const offchainSettlementDefaultSecret = "mock-user-secret"
-
 // OffchainSettlementService is the orchestration layer for P3's production
 // off-chain settlement state.
 //
@@ -215,7 +213,11 @@ func (s *OffchainSettlementService) ApplyWithdrawRequest(
 	}
 
 	if strings.TrimSpace(userSecret) == "" {
-		userSecret = offchainSettlementDefaultSecret
+		// INT-WD-NULLIFIER-peruser: derive a per-owner mock secret instead of a
+		// single shared literal, so two owners never collide on the same
+		// nullifier. Deterministic, so the batch rebuild and the gazk prover
+		// re-derive the identical value from the witness UserSecret.
+		userSecret = appstate.WithdrawSecretForOwner(req.Owner)
 	}
 
 	nullifier, err := appstate.NullifierFor(userSecret, req.Nonce)
@@ -879,5 +881,8 @@ func resolveAccountSecret(secrets map[string]string, owner string) string {
 		return secret
 	}
 
-	return offchainSettlementDefaultSecret
+	// INT-WD-NULLIFIER-peruser: per-owner mock secret (not a shared literal) so
+	// the witness UserSecret — and therefore the withdrawal nullifier the prover
+	// re-derives and the chain records — is unique per owner.
+	return appstate.WithdrawSecretForOwner(owner)
 }

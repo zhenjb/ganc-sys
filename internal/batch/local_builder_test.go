@@ -118,9 +118,10 @@ func TestLocalBuilder_Build_CanonicalAlice_WithExplicitSecret(t *testing.T) {
 }
 
 func TestLocalBuilder_Build_CanonicalAlice_FallbackMockSecret(t *testing.T) {
-	// P4 hôm nay không truyền AccountSecrets — facade phải fallback về
-	// MVP-mock secret và vẫn cho ra nullifier hợp lệ (không phải
-	// placeholder string).
+	// P4 hôm nay không truyền AccountSecrets — facade phải fallback về secret
+	// MOCK PER-OWNER (INT-WD-NULLIFIER-peruser) và vẫn cho ra nullifier hợp lệ
+	// (không phải placeholder string). Trước đây fallback là literal DÙNG CHUNG
+	// "mock-user-secret" khiến mọi owner đụng cùng nullifier khi nonce trùng.
 	out, err := batch.NewLocalBuilder().Build(context.Background(), localBuilderAliceInput(t, false))
 	if err != nil {
 		t.Fatalf("Build (no secret): unexpected error: %v", err)
@@ -129,17 +130,18 @@ func TestLocalBuilder_Build_CanonicalAlice_FallbackMockSecret(t *testing.T) {
 	if w.Nullifier == "" || w.Nullifier == "0xmocknullifier" {
 		t.Errorf("Nullifier with mock secret must be a real hash, got %q", w.Nullifier)
 	}
-	// Determinism: literal MVP-mock secret + nonce "1" luôn cho cùng
-	// nullifier. Giá trị "mock-user-secret" lock trong Agreements.
-	expected, err := state.NullifierFor("mock-user-secret", "1")
+	// Determinism: secret per-owner + nonce "1" luôn cho cùng nullifier, và
+	// witness UserSecret PHẢI là chính secret đó để prover re-derive khớp.
+	wantSecret := state.WithdrawSecretForOwner(w.Owner)
+	expected, err := state.NullifierFor(wantSecret, "1")
 	if err != nil {
-		t.Fatalf("NullifierFor mock: %v", err)
+		t.Fatalf("NullifierFor per-owner: %v", err)
 	}
 	if w.Nullifier != expected {
-		t.Errorf("Nullifier = %s, want deterministic mock %s", w.Nullifier, expected)
+		t.Errorf("Nullifier = %s, want deterministic per-owner %s", w.Nullifier, expected)
 	}
-	if out.Witness.Accounts[0].UserSecret != "mock-user-secret" {
-		t.Errorf("Witness UserSecret = %q, want MVP-mock fallback 'mock-user-secret'", out.Witness.Accounts[0].UserSecret)
+	if got := out.Witness.Accounts[0].UserSecret; got != wantSecret {
+		t.Errorf("Witness UserSecret = %q, want per-owner fallback %q", got, wantSecret)
 	}
 }
 

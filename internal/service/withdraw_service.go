@@ -10,8 +10,6 @@ import (
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
 
-const withdrawDefaultUserSecret = "mock-user-secret"
-
 // WithdrawService owns withdrawal request and claim use cases.
 //
 // INT-10 status:
@@ -91,10 +89,15 @@ func (s *WithdrawService) CreateWithdrawRequest(
 
 		// STATE-05/14 (P3): validate nonce == account.Nonce+1 and debit the
 		// pending balance. On failure the off-chain state is left untouched.
+		// INT-WD-NULLIFIER-peruser: resolve a per-owner mock secret here (the
+		// use-case layer that owns the request). This is the DE-MOCK SEAM — a
+		// later step derives the secret from the wallet signature carried on
+		// `req` (ADR-036) instead of from the owner. NullifierFor and the gazk
+		// prover stay untouched either way.
 		if _, err := s.offchainSettlementService.ApplyWithdrawRequest(
 			ctx,
 			withdrawReq,
-			withdrawDefaultUserSecret,
+			appstate.WithdrawSecretForOwner(withdrawReq.Owner),
 		); err != nil {
 			return types.WithdrawRequestResponse{}, err
 		}

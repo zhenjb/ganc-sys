@@ -89,3 +89,33 @@ func NullifierFor(userSecret, nonce string) (string, error) {
 func NullifierDomainTag() string {
 	return nullifierDomainTag
 }
+
+// withdrawSecretDomainTag domain-separates the per-owner MOCK withdrawal
+// secret from every other SHA-256 callsite (nullifier, deposit-id, etc.).
+const withdrawSecretDomainTag = "zkdex/withdraw-secret/v1"
+
+// WithdrawSecretForOwner derives the per-owner MOCK secret that seeds a
+// withdrawal nullifier (see NullifierFor). It replaces the single shared
+// "mock-user-secret" literal whose GLOBAL reuse let two DIFFERENT owners
+// collide on the same nullifier once a lockstep reset handed them the same
+// withdrawal nonce (INT-WD-NULLIFIER-peruser).
+//
+// Properties:
+//   - Deterministic: same owner → same secret, so the request-time nullifier,
+//     the batch-rebuilt nullifier and the gazk prover's re-derivation all
+//     agree (the prover reads UserSecret straight from the witness).
+//   - Injective per owner: distinct owners → distinct secrets → each owner
+//     gets an ISOLATED replay-protection namespace. Same owner+nonce still
+//     yields the same nullifier, so genuine replay is still rejected.
+//
+// DE-MOCK SEAM: the nullifier FORMULA (NullifierFor) and the prover's binding
+// check are UNCHANGED — only the SOURCE of the secret lives here. A later step
+// swaps this owner-derived mock for a wallet-derived secret (ADR-036, parallel
+// to the order-signature de-mock) WITHOUT touching NullifierFor or gazk.
+//
+// The output is opaque "0x"-prefixed hex (same shape a wallet-derived secret
+// would take), so the witness UserSecret field does not change shape on
+// de-mock. Owner is public, so embedding it in the preimage leaks nothing.
+func WithdrawSecretForOwner(owner string) string {
+	return hash.SHA256Hex([]byte(withdrawSecretDomainTag + "|" + strings.TrimSpace(owner)))
+}

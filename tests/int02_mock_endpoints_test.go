@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"testing"
 
+	appstate "github.com/zhenjb/ganc-sys/internal/state"
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
 
@@ -221,8 +222,11 @@ func TestINT02BuildBatchLocalContract(t *testing.T) {
 		t.Fatalf("expected witness owner=cosmos1alice, got %q", body.Witness.Accounts[0].Owner)
 	}
 
-	if body.Witness.Accounts[0].UserSecret != "mock-user-secret" {
-		t.Fatalf("expected witness userSecret=mock-user-secret, got %q", body.Witness.Accounts[0].UserSecret)
+	// INT-WD-NULLIFIER-peruser: witness UserSecret is now a PER-OWNER mock
+	// secret (was the shared literal "mock-user-secret"), so two owners can no
+	// longer collide on the same withdrawal nullifier.
+	if want := appstate.WithdrawSecretForOwner("cosmos1alice"); body.Witness.Accounts[0].UserSecret != want {
+		t.Fatalf("expected witness userSecret=%q (per-owner), got %q", want, body.Witness.Accounts[0].UserSecret)
 	}
 
 	if body.Witness.Accounts[0].OldBalance != "0" {
