@@ -272,3 +272,89 @@ func TestSettleTradesSharedTakerDropsExtraFills(t *testing.T) {
 	// Exactly ONE fill applied → Alice received 20 uatom (the second fill dropped).
 	assertAcct(t, mgr, "cosmos1alice", "uatom", "20", "")
 }
+
+// aliceBuyQtyNonce is Alice's BUY @100 with an explicit qty + nonce.
+func aliceBuyQtyNonce(qty, nonce string) types.SignedOrder {
+	o := aliceBuy()
+	o.Qty = qty
+	o.Nonce = nonce
+	return o
+}
+
+// INT-TRD-1FILL-per-batch (across-pass guard — the LIVE bug): a resting maker
+// filled by several takers over time produces fills that share the maker order
+// ACROSS separate settlement passes. The maker's order nullifier is spent on-chain
+// by the first settled fill, so a later fill referencing it must be DROPPED — not
+// re-submitted forever ("orderNullifier … already used" loop).
+func TestSettleTradesSharedOrderAcrossPassesDropped(t *testing.T) {
+	svc, mgr := newRealService(t, []types.DepositRecord{
+		{DepositID: "d1", Owner: "cosmos1alice", Denom: "uusdc", Amount: "5000"},
+		{DepositID: "d2", Owner: "cosmos1bob", Denom: "uatom", Amount: "50"},
+	})
+	mustCreate(t, svc, aliceBuyQtyNonce("40", "1")) // resting maker BUY 40@100
+	mustCreate(t, svc, bobSell("100", "20", "1"))   // taker#1 SELL 20 → fill#1 (maker 20/40)
+	if svc.PendingFillCount() != 1 {
+		t.Fatalf("pass#1 expected 1 fill, got %d", svc.PendingFillCount())
+	}
+
+	// Pass #1 settles fill#1 → the maker order's nullifier is now spent on-chain.
+	settled, err := svc.SettleTradesOnce(context.Background())
+	if err != nil || !settled {
+		t.Fatalf("pass#1 settle = (%v, %v), want (true, nil)", settled, err)
+	}
+
+	// A second taker hits the SAME resting maker → fill#2 shares the maker order.
+	mustCreate(t, svc, bobSell("100", "20", "2")) // taker#2 SELL 20 → fill#2 (maker remaining 20)
+	if svc.PendingFillCount() != 1 {
+		t.Fatalf("pass#2 expected 1 fill, got %d", svc.PendingFillCount())
+	}
+
+	// Pass #2: fill#2 references the already-settled maker → DROPPED at the guard,
+	// NOT re-queued (no "already used" loop). Nothing settles; no pass error.
+	settled, err = svc.SettleTradesOnce(context.Background())
+	if err != nil {
+		t.Fatalf("pass#2 err = %v, want nil (expected drop, not failure)", err)
+	}
+	if settled {
+		t.Fatal("pass#2 should settle nothing (shared maker already spent)")
+	}
+	if svc.PendingFillCount() != 0 {
+		t.Fatalf("pass#2 queue = %d, want 0 (dropped, not looped)", svc.PendingFillCount())
+	}
+	// Only fill#1 ever applied → Alice holds 20 uatom (guard drops before apply).
+	assertAcct(t, mgr, "cosmos1alice", "uatom", "20", "")
+}
+
+// orderNullifierReusedSubmitter mimics the chain rejecting a batch because one of
+// its order nullifiers is already used (the live production symptom).
+type orderNullifierReusedSubmitter struct{}
+
+func (orderNullifierReusedSubmitter) SubmitTrade(_ context.Context, _ types.SettlementUpdate, _ types.BatchCommitments, _ types.ProofBundle) (string, bool, error) {
+	return "", false, errors.New("submit-batch-proof failed: exit status 1: rpc error: order nullifier already used")
+}
+
+// INT-TRD-1FILL-per-batch (Option A — loop breaker): when the chain rejects a submit
+// with "order nullifier already used" (e.g. the in-memory guard was empty after a
+// restart), the fill is treated as a deterministic drop — rolled back and NOT
+// re-queued — so the sequencer does not retry the identical doomed batch forever.
+func TestSettleTradesDropsWhenOrderNullifierAlreadyUsed(t *testing.T) {
+	svc, mgr := settleSetup(t) // exactly one fill queued
+	svc.SetTradeSettlement(nil, orderNullifierReusedSubmitter{})
+	before := mgr.Root()
+
+	settled, err := svc.SettleTradesOnce(context.Background())
+	if settled {
+		t.Fatal("nothing should settle when the chain reports the nullifier already used")
+	}
+	if err != nil {
+		t.Fatalf("err = %v, want nil (handled drop, not a pass failure)", err)
+	}
+	// CRITICAL: dropped, NOT re-enqueued → the infinite retry loop is broken.
+	if svc.PendingFillCount() != 0 {
+		t.Fatalf("queue = %d, want 0 (already-used batch dropped, not looped)", svc.PendingFillCount())
+	}
+	// Local apply rolled back → root unchanged (no off-chain/on-chain divergence).
+	if mgr.Root() != before {
+		t.Fatal("state must roll back when the submit is rejected")
+	}
+}

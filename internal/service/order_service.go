@@ -299,7 +299,14 @@ type RealOrderService struct {
 	// settlement (INT-T06) can rebuild its OrderCommitmentInput / witness after
 	// matching has removed filled orders from the book. Accessed under matchMu.
 	orderRecords   map[string]orderRecord
-	tradeProver    TradeProver
+	// settledOrderHashes records every order hash whose per-order nullifier has
+	// already been consumed on-chain by a settled trade batch. The chain marks each
+	// order nullifier used EXACTLY once (AGR-2b), so a later fill referencing one of
+	// these orders — an order filled across multiple settlement events (a resting
+	// maker hit by several takers over time) — can never settle and is dropped
+	// instead of re-queued forever. Accessed under matchMu.
+	settledOrderHashes map[string]bool
+	tradeProver        TradeProver
 	tradeSubmitter TradeSubmitter
 	// committedRootSink keeps the CORE settlement cursor in lockstep after a trade
 	// settles on-chain (DB-1). nil when off-chain settlement is disabled.
@@ -361,7 +368,8 @@ func NewRealOrderService(manager *state.OffchainStateManager, markets []types.Ma
 		// INT-2SEQ: đường trade mint batchId dưới namespace "trade-" để không đụng
 		// namespace "core-" của đường core (SnapshotBuilder) trên cùng chain.
 		builder:        batch.NewSettlementUpdateBuilderWithPrefix("trade-"),
-		orderRecords:   make(map[string]orderRecord),
+		orderRecords:       make(map[string]orderRecord),
+		settledOrderHashes: make(map[string]bool),
 		tradeProver:    NewLocalTradeProver(),
 		tradeSubmitter: NewLocalTradeSubmitter(),
 		now:            now,

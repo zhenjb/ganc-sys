@@ -2,14 +2,23 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 
 	"github.com/zhenjb/ganc-sys/internal/batch"
 	"github.com/zhenjb/ganc-sys/internal/state"
 	"github.com/zhenjb/ganc-sys/pkg/types"
 )
+
+// errOrderAlreadySettled marks a fill that can never settle because one of its
+// orders had its per-order nullifier consumed on-chain by an earlier batch (an order
+// filled across multiple settlement events). It is an EXPECTED drop, not a pass
+// failure — SettleTradesOnce logs it and moves on without re-queueing (breaking the
+// "order nullifier already used" retry loop) and without surfacing a sequencer error.
+var errOrderAlreadySettled = errors.New("trade settlement: order already settled in a prior batch (per-order nullifier spent; 1-fill limit — see INT-TRD-1FILL-per-batch)")
 
 // INT-T06 — Trade batch pipeline.
 //
@@ -71,12 +80,14 @@ type availReserved struct {
 //
 // Shared-order guard: an order's nullifier is consumed on-chain at most once (AGR-2b:
 // applySettlementUpdate marks every trade's orderNullifier used, and a reused or
-// in-batch-duplicate one is rejected — msg_submit_batch_proof.go). When one order
-// crosses several counterparties it appears in several fills; only the FIRST can
-// settle. Later fills referencing an already-settled order would hit
-// ErrOrderNullifierReused and loop, so they are dropped with a warning. Settling
-// those fully needs a multi-fill circuit or per-fill order nullifiers (role A/B —
-// out of scope; see docs/matching_orderbook/INT-TRD-1FILL-per-batch.md).
+// in-batch-duplicate one is rejected — msg_submit_batch_proof.go). An order can be
+// filled across SEVERAL settlement events — within one pass (a taker crossing many
+// makers) OR across passes/ticks (a resting maker hit by several takers over time).
+// Only the FIRST settled fill of that order succeeds; every later fill referencing it
+// would hit ErrOrderNullifierReused and loop. `settledOrderHashes` (persistent for the
+// process) tracks those orders so such fills are DROPPED, not re-queued. Settling them
+// fully needs a multi-fill circuit or per-fill order nullifiers (role A/B — out of
+// scope; see docs/matching_orderbook/INT-TRD-1FILL-per-batch.md).
 func (s *RealOrderService) SettleTradesOnce(ctx context.Context) (bool, error) {
 	drained := s.queue.Drain()
 	if len(drained) == 0 {
@@ -85,17 +96,8 @@ func (s *RealOrderService) SettleTradesOnce(ctx context.Context) (bool, error) {
 
 	settledAny := false
 	var firstErr error
-	// Order hashes settled in THIS pass: a later fill sharing one of them cannot
-	// settle (its order nullifier is now spent on-chain), so it is dropped.
-	consumedOrders := make(map[string]bool, len(drained)*2)
 
 	for i, fill := range drained {
-		if consumedOrders[fill.MakerOrderHash] || consumedOrders[fill.TakerOrderHash] {
-			log.Printf("[trade-settlement] DROP trade=%s market=%s: order shared with an already-settled fill this pass — per-order nullifier is spent (1-fill circuit limit; see INT-TRD-1FILL-per-batch)",
-				fill.TradeID, fill.Market)
-			continue
-		}
-
 		market, ok := s.markets.Get(fill.Market)
 		if !ok {
 			// Deterministic (unknown market) — drop, do not loop.
@@ -109,8 +111,12 @@ func (s *RealOrderService) SettleTradesOnce(ctx context.Context) (bool, error) {
 		requeue, err := s.settleOneFill(ctx, market, fill)
 		if err == nil {
 			settledAny = true
-			consumedOrders[fill.MakerOrderHash] = true
-			consumedOrders[fill.TakerOrderHash] = true
+			continue
+		}
+		if errors.Is(err, errOrderAlreadySettled) {
+			// Expected drop (order filled across settlement batches) — NOT a pass
+			// failure: log, no requeue, no firstErr. This is what breaks the loop.
+			log.Printf("[trade-settlement] DROP trade=%s market=%s: %v", fill.TradeID, fill.Market, err)
 			continue
 		}
 		if firstErr == nil {
@@ -122,9 +128,26 @@ func (s *RealOrderService) SettleTradesOnce(ctx context.Context) (bool, error) {
 			s.queue.Enqueue(drained[i:])
 			return settledAny, firstErr
 		}
-		// Deterministic error — drop this fill, continue with the next.
+		// Deterministic error (order data / unknown) — drop this fill, continue.
+		log.Printf("[trade-settlement] DROP trade=%s market=%s: %v", fill.TradeID, fill.Market, err)
 	}
 	return settledAny, firstErr
+}
+
+// rememberSettledOrders marks a fill's two order hashes as having their per-order
+// nullifier consumed on-chain, so any later fill referencing them is dropped at the
+// guard in settleOneFill. Caller MUST hold matchMu.
+func (s *RealOrderService) rememberSettledOrders(fill types.Fill) {
+	s.settledOrderHashes[fill.MakerOrderHash] = true
+	s.settledOrderHashes[fill.TakerOrderHash] = true
+}
+
+// isOrderNullifierReused reports whether a submit error is the chain rejecting a
+// batch because one of its order nullifiers is already used (ErrOrderNullifierReused,
+// msg_submit_batch_proof.go). Such a failure is DETERMINISTIC — retrying the identical
+// batch loops forever — so the fill must be dropped, not re-queued.
+func isOrderNullifierReused(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "order nullifier already used")
 }
 
 // settleOneFill runs the full build → prove → submit pipeline for EXACTLY ONE fill
@@ -136,6 +159,14 @@ func (s *RealOrderService) SettleTradesOnce(ctx context.Context) (bool, error) {
 func (s *RealOrderService) settleOneFill(ctx context.Context, market types.Market, fill types.Fill) (requeue bool, err error) {
 	s.matchMu.Lock()
 	defer s.matchMu.Unlock()
+
+	// Guard: an order whose per-order nullifier was already consumed on-chain by a
+	// prior settled batch (a resting order filled across several settlement events)
+	// can never settle again. Drop deterministically — no requeue (no loop) and no
+	// doomed prove+submit round-trip.
+	if s.settledOrderHashes[fill.MakerOrderHash] || s.settledOrderHashes[fill.TakerOrderHash] {
+		return false, errOrderAlreadySettled
+	}
 
 	fills := []types.Fill{fill}
 	book := s.books.Book(market.Market)
@@ -192,6 +223,16 @@ func (s *RealOrderService) settleOneFill(ctx context.Context, market types.Marke
 
 	txHash, accepted, serr := s.tradeSubmitter.SubmitTrade(ctx, upd, com, proof)
 	if serr != nil {
+		if isOrderNullifierReused(serr) {
+			// An order in this fill was already settled on-chain in an earlier batch
+			// (order filled across settlement events). The batch can NEVER be accepted
+			// — treat as an EXPECTED drop: roll back the local apply, remember the
+			// orders so future fills of them drop cheaply at the guard, and DROP (no
+			// requeue → breaks the "order nullifier already used" retry loop).
+			s.manager.Rollback(snap)
+			s.rememberSettledOrders(fill)
+			return false, fmt.Errorf("%w: submit rejected (%v)", errOrderAlreadySettled, serr)
+		}
 		return rollback(serr, "submit")
 	}
 	if !accepted {
@@ -216,6 +257,10 @@ func (s *RealOrderService) settleOneFill(ctx context.Context, market types.Marke
 	if s.tradeBatchRecorder != nil {
 		s.tradeBatchRecorder.SaveLatestTradeBatch(upd, com, proof)
 	}
+
+	// These order nullifiers are now spent on-chain — record so any later fill
+	// referencing either order is dropped at the guard instead of looping.
+	s.rememberSettledOrders(fill)
 
 	log.Printf("[trade-settlement] SETTLED batch=%s market=%s fills=1 newRoot=%s tx=%s",
 		upd.BatchID, market.Market, res.NewRoot, txHash)
