@@ -203,9 +203,15 @@ settle_counts() {
 settle_txhashes_since() {
   local start="${1:-0}"
   [ -f "$BENCH_SERVER_LOG" ] || return 0
+  # HAI định dạng txhash cùng tồn tại — phải nhận cả hai:
+  #   • relayer cosmos THẬT : tx=B97647E7…  (HOA, KHÔNG có tiền tố 0x)
+  #   • LocalTradeSubmitter : tx=0xb867313…  (thường, CÓ 0x)
+  # Regex cũ chỉ bắt dạng có `0x` ⇒ trên hệ live luôn đếm ra 0, khiến A1a mất
+  # txhash (gas=0) và A3 bỏ cuộc sớm dù settlement vẫn chạy bình thường.
   tail -n +"$((start + 1))" "$BENCH_SERVER_LOG" 2>/dev/null \
     | grep '\[trade-settlement\] SETTLED' \
-    | grep -oE 'tx=0x[0-9a-fA-F]+' | sed 's/^tx=0x//' | tr 'a-f' 'A-F'
+    | grep -oE 'tx=(0x)?[0-9a-fA-F]{40,}' \
+    | sed -E 's/^tx=(0x)?//' | tr 'a-f' 'A-F'
 }
 
 log_lines() { [ -f "$BENCH_SERVER_LOG" ] && wc -l < "$BENCH_SERVER_LOG" || echo 0; }
