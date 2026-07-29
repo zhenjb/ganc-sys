@@ -220,8 +220,11 @@ log_lines() { [ -f "$BENCH_SERVER_LOG" ] && wc -l < "$BENCH_SERVER_LOG" || echo 
 # hệ thống), đúng chỗ P2 đáng lẽ hơn P1 nhiều nhất.
 # ⇒ Dựng signer MỘT LẦN thành binary, cache địa chỉ + khoá theo tên key.
 # =============================================================================
+# LƯU Ý (bẫy đã vấp): post_order luôn được gọi qua `$( … )` ⇒ chạy trong SUBSHELL.
+# Mọi biến gán bên trong (kể cả cache) BIẾN MẤT khi subshell thoát. Vì vậy cache
+# phải được nạp ở SHELL CHA và **export** (bench_resolve_keys) — cache cục bộ
+# trong hàm là vô dụng và khiến `obd keys show/export` vẫn chạy MỖI lệnh (~500ms).
 BENCH_BIN_DIR="${BENCH_BIN_DIR:-$GANC_SYS_DIR/.bench-bin}"
-declare -A _BENCH_ADDR=() _BENCH_PK=()
 
 # bench_build_signers — biên dịch sẵn 2 signer (gọi 1 lần ở đầu script đo)
 bench_build_signers() {
@@ -237,14 +240,9 @@ bench_build_signers() {
 # order_owner_for <keyname> — địa chỉ bech32 (có cache)
 # =============================================================================
 order_owner_for() {
-  local k="$1"
-  if [ -n "${_BENCH_ADDR[$k]:-}" ]; then echo "${_BENCH_ADDR[$k]}"; return; fi
-  local a
-  a="$("$CHAIN_BINARY" keys show "$k" -a \
-        --keyring-backend "$CHAIN_KEYRING_BACKEND" \
-        ${CHAIN_HOME:+--home "$CHAIN_HOME"} 2>/dev/null)"
-  [ -n "$a" ] && _BENCH_ADDR[$k]="$a"
-  echo "$a"
+  "$CHAIN_BINARY" keys show "$1" -a \
+    --keyring-backend "$CHAIN_KEYRING_BACKEND" \
+    ${CHAIN_HOME:+--home "$CHAIN_HOME"} 2>/dev/null || echo ""
 }
 
 # =============================================================================
@@ -252,14 +250,31 @@ order_owner_for() {
 #   Chỉ dùng cho TÀI KHOẢN TEST trên máy đo. KHÔNG dùng với ví thật.
 # =============================================================================
 privkey_hex_for() {
-  local k="$1"
-  if [ -n "${_BENCH_PK[$k]:-}" ]; then echo "${_BENCH_PK[$k]}"; return; fi
-  local p
-  p="$(yes | "$CHAIN_BINARY" keys export "$k" --unarmored-hex --unsafe \
-        --keyring-backend "$CHAIN_KEYRING_BACKEND" \
-        ${CHAIN_HOME:+--home "$CHAIN_HOME"} 2>/dev/null | tail -1 | tr -d '[:space:]')"
-  [ -n "$p" ] && _BENCH_PK[$k]="$p"
-  echo "$p"
+  yes | "$CHAIN_BINARY" keys export "$1" --unarmored-hex --unsafe \
+    --keyring-backend "$CHAIN_KEYRING_BACKEND" \
+    ${CHAIN_HOME:+--home "$CHAIN_HOME"} 2>/dev/null | tail -1 | tr -d '[:space:]'
+}
+
+# =============================================================================
+# bench_resolve_keys — nạp địa chỉ + khoá của maker/taker MỘT LẦN rồi EXPORT.
+#   Phải gọi ở shell CHA (đầu script đo). Biến export sống sót qua subshell nên
+#   post_order không phải gọi `obd keys` nữa (bỏ ~500ms/lệnh).
+# =============================================================================
+bench_resolve_keys() {
+  BENCH_MAKER_ADDR="$(order_owner_for "$BENCH_MAKER_KEY")"
+  BENCH_TAKER_ADDR="$(order_owner_for "$BENCH_TAKER_KEY")"
+  [ -n "$BENCH_MAKER_ADDR" ] || die "không lấy được địa chỉ key '$BENCH_MAKER_KEY'"
+  [ -n "$BENCH_TAKER_ADDR" ] || die "không lấy được địa chỉ key '$BENCH_TAKER_KEY'"
+  export BENCH_MAKER_ADDR BENCH_TAKER_ADDR
+
+  if [ "$ORDER_SIG_MODE" != "mock" ] && [ -n "$ORDER_SIG_MODE" ]; then
+    BENCH_MAKER_PK="$(privkey_hex_for "$BENCH_MAKER_KEY")"
+    BENCH_TAKER_PK="$(privkey_hex_for "$BENCH_TAKER_KEY")"
+    [ -n "$BENCH_MAKER_PK" ] || die "không export được khoá '$BENCH_MAKER_KEY'"
+    [ -n "$BENCH_TAKER_PK" ] || die "không export được khoá '$BENCH_TAKER_KEY'"
+    export BENCH_MAKER_PK BENCH_TAKER_PK
+  fi
+  ok "đã nạp khoá: $BENCH_MAKER_KEY=${BENCH_MAKER_ADDR:0:14}… · $BENCH_TAKER_KEY=${BENCH_TAKER_ADDR:0:14}…"
 }
 
 # =============================================================================
@@ -268,22 +283,25 @@ privkey_hex_for() {
 # =============================================================================
 post_order() {
   local keyname="$1" side="$2" price="$3" qty="$4" nonce="$5"
-  local owner signed
-  owner="$(order_owner_for "$keyname")"
-  [ -z "$owner" ] && { echo '{"error":"no such key"}'; return 1; }
+  local owner pk signed
+
+  # Lấy từ biến ĐÃ EXPORT (bench_resolve_keys) — KHÔNG gọi `obd keys` ở đây:
+  # hàm này chạy trong subshell nên mọi cache cục bộ đều vô ích, và 2 lệnh CLI
+  # sẽ tốn ~500ms MỖI lệnh, bóp méo A0_seed_seconds / A1b_latency_ms.
+  case "$keyname" in
+    "$BENCH_MAKER_KEY") owner="${BENCH_MAKER_ADDR:-}"; pk="${BENCH_MAKER_PK:-}" ;;
+    "$BENCH_TAKER_KEY") owner="${BENCH_TAKER_ADDR:-}"; pk="${BENCH_TAKER_PK:-}" ;;
+    *)                  owner="$(order_owner_for "$keyname")"; pk="$(privkey_hex_for "$keyname")" ;;
+  esac
+  [ -z "$owner" ] && { echo '{"error":"key chưa resolve — gọi bench_resolve_keys trước"}'; return 1; }
 
   # Dùng BINARY đã dựng sẵn (bench_build_signers) — không `go run` mỗi lệnh.
   if [ "$ORDER_SIG_MODE" = "mock" ] || [ -z "$ORDER_SIG_MODE" ]; then
-    local bin="$BENCH_BIN_DIR/sign_order"
-    [ -x "$bin" ] || bench_build_signers
-    signed="$("$bin" -owner "$owner" -market "$MARKET" -side "$side" \
+    signed="$("$BENCH_BIN_DIR/sign_order" -owner "$owner" -market "$MARKET" -side "$side" \
       -price "$price" -qty "$qty" -nonce "$nonce" -expiry "$BENCH_EXPIRY" 2>/dev/null)"
   else
-    local pk; pk="$(privkey_hex_for "$keyname")"
-    [ -z "$pk" ] && { echo '{"error":"cannot export privkey"}'; return 1; }
-    local bin="$BENCH_BIN_DIR/sign_order_adr036"
-    [ -x "$bin" ] || bench_build_signers
-    signed="$("$bin" -privkey-hex "$pk" -market "$MARKET" -side "$side" \
+    [ -z "$pk" ] && { echo '{"error":"thiếu privkey — gọi bench_resolve_keys trước"}'; return 1; }
+    signed="$("$BENCH_BIN_DIR/sign_order_adr036" -privkey-hex "$pk" -market "$MARKET" -side "$side" \
       -price "$price" -qty "$qty" -nonce "$nonce" -expiry "$BENCH_EXPIRY" 2>/dev/null)"
   fi
   [ -z "$signed" ] && { echo '{"error":"sign failed"}'; return 1; }

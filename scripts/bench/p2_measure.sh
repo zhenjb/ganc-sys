@@ -31,6 +31,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 bench_init
 require_tools curl jq go
 bench_build_signers      # dựng signer 1 lần — KHÔNG `go run` mỗi lệnh (xem lib.sh)
+bench_resolve_keys       # nạp+export địa chỉ/khoá 1 lần — KHÔNG `obd keys` mỗi lệnh
 
 SCALES="${SCALES:-10 100 1000}"
 QTY="${BENCH_QTY:-1}"
@@ -61,7 +62,10 @@ start_ram(){
   RAM_PID=$!
 }
 stop_ram(){ [ -n "$RAM_PID" ] && kill "$RAM_PID" 2>/dev/null; RAM_PID=""; }
-trap 'stop_ram' EXIT INT TERM
+# QUAN TRỌNG: handler cho INT/TERM PHẢI tự `exit`. Nếu chỉ dọn dẹp rồi trả về,
+# bash chạy tiếp lệnh kế — Ctrl-C sẽ KHÔNG dừng được script (đã vấp).
+trap 'stop_ram' EXIT
+trap 'stop_ram; echo; err "đã hủy bởi người dùng — số liệu run này KHÔNG dùng được"; exit 130' INT TERM
 
 # --- Chờ đúng N tx settle mới xuất hiện trong log; in số đếm được -----------
 wait_settled(){
