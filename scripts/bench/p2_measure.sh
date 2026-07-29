@@ -41,7 +41,7 @@ NONCE_BASE="${BENCH_NONCE_BASE:-$(date +%s)}"
 TICK="$(interval_secs)"
 
 CSV="$OUT_DIR/p2_${RUN_ID}.csv"
-echo "scale_n,depth,A1b_gas_nomatch,A1a_gas_buy,A1a_gas_per_trade,A3_trades_committed,A3_seconds,A3_trades_per_s,A4_ram_kb,A4_ram_mb,A0_seed_seconds,A1b_latency_ms,A5_drop_pct,A6_settle_tx" > "$CSV"
+echo "scale_n,depth,A1b_gas_nomatch,A1a_gas_buy,A1a_gas_per_trade,A3_trades_committed,A3_seconds,A3_trades_per_s,A4_ram_kb,A4_ram_mb,A0_seed_seconds,A1b_latency_ms,A5_drop_pct,A6_settle_tx,A7_gap_median_s,A7_gap_max_s,A8_drained_total" > "$CSV"
 
 echo "P2 measurement — market=$MARKET seller=$BENCH_MAKER_KEY buyer=$BENCH_TAKER_KEY sig=$ORDER_SIG_MODE"
 echo "Hệ: $SCALES | tick=$SETTLEMENT_INTERVAL | api=$API_BASE_URL"
@@ -79,6 +79,44 @@ wait_settled(){
     sleep 2; waited=$((waited+2))
   done
   echo "$cnt"
+}
+
+# --- Rào chắn drain: chờ hàng đợi fill CẠN HẲN trước khi sang mốc sau -------
+# Không có rào này, fill của mốc n settle lấn sang cửa sổ của mốc n+1 và phân
+# tách theo mốc trở nên vô nghĩa (đã vấp: mốc 100 đếm 62/101, mốc 1000 đếm 1040
+# > 1001 vì hứng phần thừa). Điều kiện dừng: KHÔNG có SETTLED mới trong 30s.
+drain_barrier(){
+  local from="$1" quiet=0 last=-1 cnt waited=0 max="${2:-600}"
+  while [ "$quiet" -lt 30 ] && [ "$waited" -lt "$max" ]; do
+    cnt="$(settle_txhashes_since "$from" | wc -l)"
+    if [ "$cnt" -eq "$last" ]; then quiet=$((quiet+5)); else quiet=0; last="$cnt"; fi
+    sleep 5; waited=$((waited+5))
+  done
+  echo "$last"
+}
+
+# --- Thống kê KHOẢNG CÁCH giữa các lần SETTLED trong cửa sổ của mốc này -----
+# Đây là chỉ số phân biệt NĂNG LỰC với THỜI GIAN CHẾT:
+#   • gap trung vị  ≈ chi phí thật để chốt 1 fill (năng lực)
+#   • gap tối đa    = khoảng đứng im dài nhất (chờ tick / prover khởi động)
+# Throughput thô = số fill ÷ tổng span, nên bị thời gian chết làm loãng; gap
+# trung vị thì KHÔNG. Nếu trung vị gần như nhau ở cả 3 mốc ⇒ năng lực PHẲNG,
+# và mọi biến thiên của throughput chỉ là overhead — đúng như lý thuyết đòi hỏi.
+# In "<median> <max> <count>"; "NA NA 0" nếu chưa đủ mẫu.
+settle_gap_stats(){
+  local from="$1" f="$OUT_DIR/.gaps.$$"
+  tail -n +"$((from + 1))" "$BENCH_SERVER_LOG" 2>/dev/null \
+    | grep '\[trade-settlement\] SETTLED' \
+    | awk '{split($2,t,":"); s=t[1]*3600+t[2]*60+t[3];
+            if(n++){g=s-p; if(g<0)g+=86400; print g} p=s}' \
+    | sort -n > "$f"
+  local c; c=$(wc -l < "$f")
+  if [ "${c:-0}" -lt 2 ]; then rm -f "$f"; echo "NA NA ${c:-0}"; return; fi
+  local med mx
+  med=$(awk -v c="$c" 'NR==int((c+1)/2){print $1}' "$f")
+  mx=$(tail -1 "$f")
+  rm -f "$f"
+  echo "$med $mx $c"
 }
 
 # --- Đặt 1 lệnh; in "<ok> <latency_ms>" ------------------------------------
@@ -157,6 +195,18 @@ run_scale(){
   tput="$(awk -v k="$committed" -v d="$dt" 'BEGIN{ if(d>0) printf "%.3f", k/d; else print "NA"}')"
   ok "A3 throughput = $committed trade / ${dt}s = ${tput} trade/s"
 
+  # --- A6: năng lực thật (gap trung vị) vs thời gian chết (gap tối đa) ------
+  local gmed gmax gcnt
+  read -r gmed gmax gcnt <<< "$(settle_gap_stats "$lg3")"
+  ok "A6 gap giữa 2 lần chốt: trung vị=${gmed}s · tối đa=${gmax}s · mẫu=${gcnt}"
+  [ "$gmed" != "NA" ] && log "   ⇒ năng lực ≈ $(awk -v g="$gmed" 'BEGIN{if(g>0)printf "%.3f",1/g; else print "NA"}') trade/s (không tính thời gian chết)"
+
+  # --- Rào chắn: cạn hàng đợi trước khi sang mốc sau ------------------------
+  log "Chờ hàng đợi fill cạn hẳn trước khi sang mốc kế…"
+  local drained; drained="$(drain_barrier "$lg3" 900)"
+  [ "${drained:-0}" -gt "$committed" ] && \
+    warn "sau rào chắn có thêm $(( drained - committed )) fill settle — số A3 đã bị cắt sớm"
+
   # --- A4 RAM (3 tiến trình) + A5 drop rate ---------------------------------
   stop_ram
   local ram_kb ram_mb; ram_kb="$(cat "$ramfile" 2>/dev/null || echo 0)"
@@ -169,10 +219,11 @@ run_scale(){
   [ "$tot" -gt 0 ] && drop_pct="$(awk -v d="$drop_d" -v t="$tot" 'BEGIN{printf "%.2f", d*100/t}')"
   ok "A5 settled=$set_d dropped=$drop_d → drop=${drop_pct}%"
 
-  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
     "$n" "$depth" "$gas_nomatch" "$gas_buy" "$gas_trade" \
     "$committed" "$dt" "$tput" "$ram_kb" "$ram_mb" \
-    "$seed_s" "$lat_nomatch" "$drop_pct" "$set_d" >> "$CSV"
+    "$seed_s" "$lat_nomatch" "$drop_pct" "$set_d" \
+    "$gmed" "$gmax" "$drained" >> "$CSV"
 }
 
 for n in $SCALES; do run_scale "$n" || warn "hệ n=$n lỗi — tiếp tục"; done
