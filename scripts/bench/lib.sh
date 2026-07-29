@@ -37,6 +37,13 @@ ORDER_SIG_MODE="${ORDER_SIG_MODE:-adr36}"     # live default = adr36 (ví ký)
 SETTLEMENT_INTERVAL="${SETTLEMENT_INTERVAL:-8s}"
 MARKET="${MARKET:-ATOM/USDC}"
 
+# Expiry của order tính bằng UNIX SECONDS ("now and expiry are unix seconds" —
+# internal/state/order_validation.go:196). Mặc định của sign_order /
+# sign_order_adr036 là 2000000 = 24/01/1970 ⇒ trên hệ chạy thật MỌI lệnh bị từ
+# chối `expired` TRƯỚC cả khi kiểm chữ ký (validation bước 5 chạy trước bước 6).
+# Vì vậy bench luôn truyền expiry tường minh = bây giờ + 1 ngày.
+BENCH_EXPIRY="${BENCH_EXPIRY:-$(( $(date +%s) + 86400 ))}"
+
 # Log backend — BẮT BUỘC để tính drop rate (đếm SETTLED/DROP).
 # real_db_mode_up.sh đã ghi sẵn vào /tmp/api.real.log (cố định, KHÔNG rotate)
 # nên mặc định trỏ thẳng vào đó — không phải tự redirect gì cả.
@@ -235,13 +242,13 @@ post_order() {
   if [ "$ORDER_SIG_MODE" = "mock" ] || [ -z "$ORDER_SIG_MODE" ]; then
     signed="$(cd "$GANC_SYS_DIR" && go run ./p3/script-test/sign_order \
       -owner "$owner" -market "$MARKET" -side "$side" \
-      -price "$price" -qty "$qty" -nonce "$nonce" 2>/dev/null)"
+      -price "$price" -qty "$qty" -nonce "$nonce" -expiry "$BENCH_EXPIRY" 2>/dev/null)"
   else
     local pk; pk="$(privkey_hex_for "$keyname")"
     [ -z "$pk" ] && { echo '{"error":"cannot export privkey"}'; return 1; }
     signed="$(cd "$GANC_SYS_DIR" && go run ./p3/script-test/sign_order_adr036 \
       -privkey-hex "$pk" -market "$MARKET" -side "$side" \
-      -price "$price" -qty "$qty" -nonce "$nonce" 2>/dev/null)"
+      -price "$price" -qty "$qty" -nonce "$nonce" -expiry "$BENCH_EXPIRY" 2>/dev/null)"
   fi
   [ -z "$signed" ] && { echo '{"error":"sign failed"}'; return 1; }
 
