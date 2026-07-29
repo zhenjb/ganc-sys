@@ -29,7 +29,8 @@
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 bench_init
-require_tools curl jq
+require_tools curl jq go
+bench_build_signers      # dựng signer 1 lần — KHÔNG `go run` mỗi lệnh (xem lib.sh)
 
 SCALES="${SCALES:-10 100 1000}"
 QTY="${BENCH_QTY:-1}"

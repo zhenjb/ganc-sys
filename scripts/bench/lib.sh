@@ -211,22 +211,55 @@ settle_txhashes_since() {
 log_lines() { [ -f "$BENCH_SERVER_LOG" ] && wc -l < "$BENCH_SERVER_LOG" || echo 0; }
 
 # =============================================================================
-# order_owner_for <keyname> — địa chỉ bech32 của key trong keyring chain
+# TĂNG TỐC ĐẶT LỆNH — bắt buộc cho các mốc lớn.
+# -----------------------------------------------------------------------------
+# Bản đầu gọi 3 tiến trình con MỖI LỆNH: `go run` (biên dịch lại signer!) +
+# `keys show` + `keys export` ≈ 0.5 s/lệnh. Ở n=1000 (seed 1000 + A3 1000 = 2000
+# lệnh) là ~17 phút chi phí của chính công cụ đo — và nó BÓP MÉO
+# A0_seed_seconds / A1b_latency_ms (đo thời gian biên dịch Go, không phải tốc độ
+# hệ thống), đúng chỗ P2 đáng lẽ hơn P1 nhiều nhất.
+# ⇒ Dựng signer MỘT LẦN thành binary, cache địa chỉ + khoá theo tên key.
 # =============================================================================
-order_owner_for() {
-  "$CHAIN_BINARY" keys show "$1" -a \
-    --keyring-backend "$CHAIN_KEYRING_BACKEND" \
-    ${CHAIN_HOME:+--home "$CHAIN_HOME"} 2>/dev/null || echo ""
+BENCH_BIN_DIR="${BENCH_BIN_DIR:-$GANC_SYS_DIR/.bench-bin}"
+declare -A _BENCH_ADDR=() _BENCH_PK=()
+
+# bench_build_signers — biên dịch sẵn 2 signer (gọi 1 lần ở đầu script đo)
+bench_build_signers() {
+  mkdir -p "$BENCH_BIN_DIR"
+  ( cd "$GANC_SYS_DIR" \
+    && go build -o "$BENCH_BIN_DIR/sign_order"        ./p3/script-test/sign_order \
+    && go build -o "$BENCH_BIN_DIR/sign_order_adr036" ./p3/script-test/sign_order_adr036 ) \
+    || die "không build được signer (xem go build ./p3/script-test/...)"
+  ok "đã dựng signer: $BENCH_BIN_DIR"
 }
 
 # =============================================================================
-# privkey_hex_for <keyname> — export private key hex (keyring test backend)
+# order_owner_for <keyname> — địa chỉ bech32 (có cache)
+# =============================================================================
+order_owner_for() {
+  local k="$1"
+  if [ -n "${_BENCH_ADDR[$k]:-}" ]; then echo "${_BENCH_ADDR[$k]}"; return; fi
+  local a
+  a="$("$CHAIN_BINARY" keys show "$k" -a \
+        --keyring-backend "$CHAIN_KEYRING_BACKEND" \
+        ${CHAIN_HOME:+--home "$CHAIN_HOME"} 2>/dev/null)"
+  [ -n "$a" ] && _BENCH_ADDR[$k]="$a"
+  echo "$a"
+}
+
+# =============================================================================
+# privkey_hex_for <keyname> — private key hex (có cache)
 #   Chỉ dùng cho TÀI KHOẢN TEST trên máy đo. KHÔNG dùng với ví thật.
 # =============================================================================
 privkey_hex_for() {
-  yes | "$CHAIN_BINARY" keys export "$1" --unarmored-hex --unsafe \
-    --keyring-backend "$CHAIN_KEYRING_BACKEND" \
-    ${CHAIN_HOME:+--home "$CHAIN_HOME"} 2>/dev/null | tail -1 | tr -d '[:space:]'
+  local k="$1"
+  if [ -n "${_BENCH_PK[$k]:-}" ]; then echo "${_BENCH_PK[$k]}"; return; fi
+  local p
+  p="$(yes | "$CHAIN_BINARY" keys export "$k" --unarmored-hex --unsafe \
+        --keyring-backend "$CHAIN_KEYRING_BACKEND" \
+        ${CHAIN_HOME:+--home "$CHAIN_HOME"} 2>/dev/null | tail -1 | tr -d '[:space:]')"
+  [ -n "$p" ] && _BENCH_PK[$k]="$p"
+  echo "$p"
 }
 
 # =============================================================================
@@ -239,15 +272,18 @@ post_order() {
   owner="$(order_owner_for "$keyname")"
   [ -z "$owner" ] && { echo '{"error":"no such key"}'; return 1; }
 
+  # Dùng BINARY đã dựng sẵn (bench_build_signers) — không `go run` mỗi lệnh.
   if [ "$ORDER_SIG_MODE" = "mock" ] || [ -z "$ORDER_SIG_MODE" ]; then
-    signed="$(cd "$GANC_SYS_DIR" && go run ./p3/script-test/sign_order \
-      -owner "$owner" -market "$MARKET" -side "$side" \
+    local bin="$BENCH_BIN_DIR/sign_order"
+    [ -x "$bin" ] || bench_build_signers
+    signed="$("$bin" -owner "$owner" -market "$MARKET" -side "$side" \
       -price "$price" -qty "$qty" -nonce "$nonce" -expiry "$BENCH_EXPIRY" 2>/dev/null)"
   else
     local pk; pk="$(privkey_hex_for "$keyname")"
     [ -z "$pk" ] && { echo '{"error":"cannot export privkey"}'; return 1; }
-    signed="$(cd "$GANC_SYS_DIR" && go run ./p3/script-test/sign_order_adr036 \
-      -privkey-hex "$pk" -market "$MARKET" -side "$side" \
+    local bin="$BENCH_BIN_DIR/sign_order_adr036"
+    [ -x "$bin" ] || bench_build_signers
+    signed="$("$bin" -privkey-hex "$pk" -market "$MARKET" -side "$side" \
       -price "$price" -qty "$qty" -nonce "$nonce" -expiry "$BENCH_EXPIRY" 2>/dev/null)"
   fi
   [ -z "$signed" ] && { echo '{"error":"sign failed"}'; return 1; }
