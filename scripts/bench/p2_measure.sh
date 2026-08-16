@@ -41,7 +41,7 @@ NONCE_BASE="${BENCH_NONCE_BASE:-$(date +%s)}"
 TICK="$(interval_secs)"
 
 CSV="$OUT_DIR/p2_${RUN_ID}.csv"
-echo "scale_n,depth,A1b_gas_nomatch,A1a_gas_buy,A1a_gas_per_trade,A3_trades_committed,A3_seconds,A3_trades_per_s,A4_ram_kb,A4_ram_mb,A0_seed_seconds,A1b_latency_ms,A5_drop_pct,A6_settle_tx,A7_gap_median_s,A7_gap_max_s,A8_drained_total" > "$CSV"
+echo "scale_n,depth,A1b_gas_nomatch,A1a_gas_buy,A1a_gas_per_trade,A3_trades_committed,A3_seconds,A3_trades_per_s,A4_ram_kb,A4_ram_mb,A0_seed_seconds,A1b_latency_ms,A5_drop_pct,A6_settle_tx,A7_gap_median_s,A7_gap_max_s,A8_drained_total,A2_e2e_median_ms,A2_e2e_min_ms,A2_e2e_max_ms" > "$CSV"
 
 echo "P2 measurement — market=$MARKET seller=$BENCH_MAKER_KEY buyer=$BENCH_TAKER_KEY sig=$ORDER_SIG_MODE"
 echo "Hệ: $SCALES | tick=$SETTLEMENT_INTERVAL | api=$API_BASE_URL"
@@ -178,6 +178,42 @@ run_scale(){
   local gas_trade="$gas_buy"
   ok "A1a gas(SubmitBatchProof)=$gas_buy = gas/trade=$gas_trade  [P2: 1 tx/trade]"
 
+  # --- A2: ĐỘ TRỄ VÒNG ĐỜI ĐẦY ĐỦ của một lệnh taker ------------------------
+  # Đo ĐÚNG cùng một sự kiện với P1: taker được đặt & khớp → chain cập nhật xong.
+  #
+  # Vì sao cần riêng chỉ số này: P1 gộp đặt+khớp+chốt vào MỘT tx, nên
+  # `A3_seconds ÷ K` của P1 đã là vòng đời đầy đủ. P2 tách ba việc (HTTP → tick
+  # khớp → tick chốt → prove → submit), nên `A1b_latency` (chỉ đo bước HTTP)
+  # KHÔNG so được với số của P1 — đặt cạnh nhau là lệch hệ quy chiếu.
+  #
+  # BẮT BUỘC lặp nhiều lần: độ trễ phụ thuộc PHA của tick (khớp 2s + chốt 8s),
+  # nên phân bố gần như đều trên khoảng đó. Một mẫu đơn lẻ vô nghĩa — lấy
+  # trung vị, kèm min/max để thấy biên độ.
+  local E2E_REPS="${BENCH_E2E_REPS:-10}"
+  log "A2: vòng đời đầy đủ (taker khớp → on-chain), lặp $E2E_REPS lần…"
+  local ef="$OUT_DIR/.e2e.$$" j lgx t0x t1x gotx
+  : > "$ef"
+  for ((j=0;j<E2E_REPS;j++)); do
+    lgx="$(log_lines)"
+    t0x="$(now_ms)"
+    post_order "$BENCH_TAKER_KEY" buy "$((BASE_PRICE+n+5))" "$QTY" "$((base+n+100+j))" >/dev/null
+    gotx="$(wait_settled "$lgx" 1 120)"
+    t1x="$(now_ms)"
+    [ "${gotx:-0}" -ge 1 ] && echo "$((t1x-t0x))" >> "$ef"
+    printf '\r    …mẫu %d/%d' "$((j+1))" "$E2E_REPS"
+  done
+  echo
+  local e2e_med=NA e2e_min=NA e2e_max=NA ec
+  ec=$(wc -l < "$ef")
+  if [ "${ec:-0}" -ge 1 ]; then
+    sort -n "$ef" -o "$ef"
+    e2e_med=$(awk -v c="$ec" 'NR==int((c+1)/2){print $1}' "$ef")
+    e2e_min=$(head -1 "$ef"); e2e_max=$(tail -1 "$ef")
+  fi
+  rm -f "$ef"
+  ok "A2 vòng đời: trung vị=${e2e_med}ms · min=${e2e_min}ms · max=${e2e_max}ms (${ec} mẫu)"
+  log "   ⇒ so trực tiếp với P1 (A3_seconds÷K). A1b_latency chỉ là bước HTTP, KHÔNG dùng để so."
+
   # --- A3: throughput -------------------------------------------------------
   local K="${THROUGHPUT_K:-$depth}"
   [ "$K" -gt "$depth" ] && K="$depth"
@@ -219,11 +255,12 @@ run_scale(){
   [ "$tot" -gt 0 ] && drop_pct="$(awk -v d="$drop_d" -v t="$tot" 'BEGIN{printf "%.2f", d*100/t}')"
   ok "A5 settled=$set_d dropped=$drop_d → drop=${drop_pct}%"
 
-  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
     "$n" "$depth" "$gas_nomatch" "$gas_buy" "$gas_trade" \
     "$committed" "$dt" "$tput" "$ram_kb" "$ram_mb" \
     "$seed_s" "$lat_nomatch" "$drop_pct" "$set_d" \
-    "$gmed" "$gmax" "$drained" >> "$CSV"
+    "$gmed" "$gmax" "$drained" \
+    "$e2e_med" "$e2e_min" "$e2e_max" >> "$CSV"
 }
 
 for n in $SCALES; do run_scale "$n" || warn "hệ n=$n lỗi — tiếp tục"; done
